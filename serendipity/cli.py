@@ -17,22 +17,20 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from serendipity.agent import Recommendation, SerendipityAgent
+from serendipity.agent import BASE_TEMPLATE, Recommendation, SerendipityAgent
 
 # Config setting descriptions
 CONFIG_DESCRIPTIONS = {
     "preferences_path": "Path to your taste profile (markdown file with your preferences)",
+    "template_path": "Path to HTML template (copied from package default on first use)",
     "history_enabled": "Track recommendations to avoid repeats and learn from feedback",
     "max_recent_history": "Number of recent items to include in context (avoids repeating)",
-    "summarize_old_history": "Auto-summarize old history to save context space",
-    "summary_threshold": "Number of items before triggering auto-summarization",
     "feedback_server_port": "Port for the HTML feedback server (localhost)",
     "default_model": "Claude model to use (haiku=fast, sonnet=balanced, opus=best)",
     "default_n1": "Default number of convergent recommendations (more of what you like)",
     "default_n2": "Default number of divergent recommendations (expand your taste)",
     "html_style": "HTML styling preference (null=auto-generate based on taste)",
 }
-from serendipity.html_renderer import render_html, render_and_open
 from serendipity.storage import Config, HistoryEntry, StorageManager
 
 app = typer.Typer(
@@ -44,6 +42,16 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
     invoke_without_command=True,
 )
+
+# Context subcommand group for managing what gets injected into Claude
+context_app = typer.Typer(
+    name="context",
+    help="View and manage the context injected into Claude's prompt",
+    rich_markup_mode="rich",
+    invoke_without_command=True,
+)
+app.add_typer(context_app, name="context")
+
 console = Console()
 
 
@@ -57,8 +65,7 @@ def callback(ctx: typer.Context) -> None:
             "[bold]Commands:[/bold]\n\n"
             "  serendipity discover context.md   # Run discovery\n"
             "  serendipity config                # Manage configuration\n"
-            "  serendipity preferences           # Edit taste profile\n"
-            "  serendipity history               # View history\n\n"
+            "  serendipity context               # View/manage what Claude sees\n\n"
             "[bold]Quick usage:[/bold]\n\n"
             "  serendipity discover context.md   # From file\n"
             "  serendipity discover -p           # From clipboard\n"
@@ -251,15 +258,23 @@ def _start_feedback_server(
     agent: SerendipityAgent,
     port: int,
     html_content: Optional[str] = None,
+    static_dir: Optional[Path] = None,
+    user_input: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> None:
     """Start the feedback server in a background thread."""
     from serendipity.server import FeedbackServer
 
-    async def on_more_request(session_id: str, rec_type: str, count: int):
+    # Store reference to server for registering session input
+    server_ref = [None]
+
+    async def on_more_request(session_id: str, rec_type: str, count: int, session_feedback: list = None):
         """Handle 'more' requests from HTML."""
         try:
             console.print(f"[dim]Getting {count} more {rec_type} recommendations...[/dim]")
-            recommendations = await agent.get_more(session_id, rec_type, count)
+            if session_feedback:
+                console.print(f"[dim]With {len(session_feedback)} feedback items from this session[/dim]")
+            recommendations = await agent.get_more(session_id, rec_type, count, session_feedback)
 
             # Save to history
             entries = []
@@ -288,7 +303,14 @@ def _start_feedback_server(
             on_more_request=on_more_request,
             idle_timeout=600,  # 10 minutes
             html_content=html_content,
+            static_dir=static_dir,
         )
+        server_ref[0] = server
+
+        # Register user input for context panel
+        if session_id and user_input:
+            server.register_session_input(session_id, user_input)
+
         await server.start(port)
 
         # Keep running until interrupted
@@ -336,15 +358,15 @@ def discover_cmd(
         None,
         help="Path to context file (use '-' for stdin)",
     ),
-    n1: int = typer.Option(
-        5,
+    n1: Optional[int] = typer.Option(
+        None,
         "--n1",
-        help="Number of convergent recommendations",
+        help="Number of convergent recommendations (default from config)",
     ),
-    n2: int = typer.Option(
-        5,
+    n2: Optional[int] = typer.Option(
+        None,
         "--n2",
-        help="Number of divergent recommendations",
+        help="Number of divergent recommendations (default from config)",
     ),
     paste: bool = typer.Option(
         False,
@@ -390,7 +412,7 @@ def discover_cmd(
         False,
         "--whorl",
         "-w",
-        help="Enable whorl integration (search personal knowledge base for context)",
+        help="Enable Whorl integration (search personal knowledge base for context)",
     ),
 ) -> None:
     """Discover convergent and divergent content recommendations.
@@ -402,7 +424,7 @@ def discover_cmd(
       [dim]$[/dim] serendipity discover -i               [dim]# Open editor[/dim]
       [dim]$[/dim] serendipity discover context.md --n1 3 --n2 8
       [dim]$[/dim] serendipity discover context.md -o terminal  [dim]# No browser[/dim]
-      [dim]$[/dim] serendipity discover context.md -w    [dim]# With whorl knowledge base[/dim]
+      [dim]$[/dim] serendipity discover context.md -w    [dim]# With Whorl knowledge base[/dim]
     """
     # Load storage and config
     storage = StorageManager()
@@ -412,6 +434,10 @@ def discover_cmd(
     # Use config defaults if not specified
     if model is None:
         model = config.default_model
+    if n1 is None:
+        n1 = config.default_n1
+    if n2 is None:
+        n2 = config.default_n2
 
     # Get context from input sources
     context = _get_context(file_path, paste, interactive)
@@ -473,8 +499,18 @@ def discover_cmd(
             border_style="blue",
         ))
 
+    # Get template path (copies package default to user location on first use)
+    template_path = storage.get_template_path(BASE_TEMPLATE)
+
     # Run discovery
-    agent = SerendipityAgent(console=console, model=model, verbose=verbose, whorl=whorl)
+    agent = SerendipityAgent(
+        console=console,
+        model=model,
+        verbose=verbose,
+        whorl=whorl,
+        server_port=config.feedback_server_port,
+        template_path=template_path,
+    )
 
     console.print("[bold green]Discovering...[/bold green]")
     console.print()
@@ -493,18 +529,30 @@ def discover_cmd(
 
     # Output based on format
     if output_format == "html":
-        # Generate HTML content
-        html_content = render_html(result, server_port=config.feedback_server_port)
+        # Require Claude to have written the HTML file
+        if not result.html_path or not result.html_path.exists():
+            console.print(error("Claude failed to write HTML file"))
+            console.print(f"[dim]Expected path: {agent.output_dir}[/dim]")
+            raise typer.Exit(code=1)
 
-        # Start feedback server with HTML content (serves at localhost/)
-        _start_feedback_server(storage, agent, config.feedback_server_port, html_content=html_content)
+        # Start feedback server with static file serving
+        _start_feedback_server(
+            storage,
+            agent,
+            config.feedback_server_port,
+            static_dir=agent.output_dir,
+            user_input=context,
+            session_id=result.session_id,
+        )
 
-        # Open browser to localhost server (avoids file:// CORS issues)
+        # Open browser to the specific file
         import webbrowser
-        url = f"http://localhost:{config.feedback_server_port}/"
+        filename = result.html_path.name
+        url = f"http://localhost:{config.feedback_server_port}/{filename}"
         webbrowser.open(url)
 
         console.print(success(f"Opened in browser: {url}"))
+        console.print(f"[dim]HTML file: {result.html_path}[/dim]")
         console.print(f"[dim]Feedback server running on localhost:{config.feedback_server_port}[/dim]")
         console.print("[dim]Press Ctrl+C to stop the server when done.[/dim]")
 

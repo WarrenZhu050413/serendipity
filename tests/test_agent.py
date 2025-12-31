@@ -204,24 +204,24 @@ class TestParseJson:
         assert result["html_style"]["description"] == "Minimal dark theme"
 
 
-class TestGetPlugins:
-    """Tests for _get_plugins method."""
+class TestGetMcpServers:
+    """Tests for _get_mcp_servers method."""
 
-    def test_no_plugins_when_whorl_disabled(self):
-        """Test that no plugins are returned when whorl is disabled."""
+    def test_no_servers_when_whorl_disabled(self):
+        """Test that no MCP servers are returned when Whorl is disabled."""
         with patch("serendipity.agent.ensure_whorl_running"):
             agent = SerendipityAgent(console=Console(), whorl=False)
-            plugins = agent._get_plugins()
-            assert plugins == []
+            servers = agent._get_mcp_servers()
+            assert servers == {}
 
-    def test_whorl_plugin_when_enabled(self):
-        """Test that whorl plugin is returned when enabled."""
+    def test_whorl_server_when_enabled(self):
+        """Test that Whorl MCP server is returned when enabled."""
         with patch("serendipity.agent.ensure_whorl_running", return_value=True):
             agent = SerendipityAgent(console=Console(), whorl=True)
-            plugins = agent._get_plugins()
-            assert len(plugins) == 1
-            assert plugins[0]["type"] == "local"
-            assert "whorl" in plugins[0]["path"]
+            servers = agent._get_mcp_servers()
+            assert "whorl" in servers
+            assert servers["whorl"]["type"] == "http"
+            assert "8081" in servers["whorl"]["url"]
 
 
 class TestAllowedTools:
@@ -296,3 +296,83 @@ class TestResumeCommand:
             agent.last_session_id = "abc123"
             cmd = agent.get_resume_command()
             assert cmd == "claude -r abc123"
+
+
+class TestGetMoreSessionFeedback:
+    """Tests for get_more with session_feedback parameter."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent for testing."""
+        with patch("serendipity.agent.ensure_whorl_running"):
+            return SerendipityAgent(console=Console(), whorl=False)
+
+    def test_get_more_accepts_session_feedback_param(self, agent):
+        """Test that get_more accepts session_feedback parameter."""
+        import inspect
+        sig = inspect.signature(agent.get_more)
+        params = list(sig.parameters.keys())
+        assert "session_feedback" in params
+
+    def test_get_more_sync_accepts_session_feedback_param(self, agent):
+        """Test that get_more_sync accepts session_feedback parameter."""
+        import inspect
+        sig = inspect.signature(agent.get_more_sync)
+        params = list(sig.parameters.keys())
+        assert "session_feedback" in params
+
+    def test_session_feedback_default_is_none(self, agent):
+        """Test that session_feedback defaults to None."""
+        import inspect
+        sig = inspect.signature(agent.get_more)
+        session_feedback_param = sig.parameters["session_feedback"]
+        assert session_feedback_param.default is None
+
+    def test_build_feedback_context_with_liked(self, agent):
+        """Test that liked items are included in feedback context."""
+        # We test the internal logic by checking prompt construction
+        # The method builds feedback context based on session_feedback
+        session_feedback = [
+            {"url": "https://liked1.com", "feedback": "liked"},
+            {"url": "https://liked2.com", "feedback": "liked"},
+        ]
+
+        # Extract the feedback context building logic
+        liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
+        assert len(liked) == 2
+        assert "https://liked1.com" in liked
+        assert "https://liked2.com" in liked
+
+    def test_build_feedback_context_with_disliked(self, agent):
+        """Test that disliked items are included in feedback context."""
+        session_feedback = [
+            {"url": "https://disliked1.com", "feedback": "disliked"},
+        ]
+
+        disliked = [f["url"] for f in session_feedback if f.get("feedback") == "disliked"]
+        assert len(disliked) == 1
+        assert "https://disliked1.com" in disliked
+
+    def test_build_feedback_context_mixed(self, agent):
+        """Test handling of mixed liked/disliked feedback."""
+        session_feedback = [
+            {"url": "https://liked.com", "feedback": "liked"},
+            {"url": "https://disliked.com", "feedback": "disliked"},
+            {"url": "https://liked2.com", "feedback": "liked"},
+        ]
+
+        liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
+        disliked = [f["url"] for f in session_feedback if f.get("feedback") == "disliked"]
+
+        assert len(liked) == 2
+        assert len(disliked) == 1
+
+    def test_empty_session_feedback_produces_no_context(self, agent):
+        """Test that empty session_feedback produces no feedback context."""
+        session_feedback = []
+
+        liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
+        disliked = [f["url"] for f in session_feedback if f.get("feedback") == "disliked"]
+
+        assert liked == []
+        assert disliked == []

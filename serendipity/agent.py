@@ -44,13 +44,15 @@ structlog.configure(
 logger = structlog.get_logger()
 
 PROMPT_TEMPLATE = Path(__file__).parent / "prompt.txt"
-WHORL_PLUGIN_PATH = Path(__file__).parent / "plugins" / "whorl"
+BASE_TEMPLATE = Path(__file__).parent / "base_template.html"
+FRONTEND_DESIGN = Path(__file__).parent / "frontend_design.md"
+OUTPUT_DIR = Path.home() / ".serendipity" / "output"
 WHORL_PORT = 8081
 WHORL_LOG_PATH = Path.home() / ".whorl" / "server.log"
 
 
 def check_whorl_setup(console: Console) -> tuple[bool, str]:
-    """Check if whorl is properly set up.
+    """Check if Whorl is properly set up.
 
     Args:
         console: Rich console for output
@@ -60,22 +62,22 @@ def check_whorl_setup(console: Console) -> tuple[bool, str]:
     """
     import shutil
 
-    # Check 1: Is whorl CLI installed?
+    # Check 1: Is Whorl CLI installed?
     if not shutil.which("whorl"):
         return False, (
             "[red]Whorl not installed.[/red]\n\n"
-            "To use whorl integration, install it first:\n"
+            "To use Whorl integration, install it first:\n"
             "  [cyan]pip install whorled[/cyan]\n"
             "  [cyan]whorl init[/cyan]\n\n"
             "Then add documents to [cyan]~/.whorl/docs/[/cyan]"
         )
 
-    # Check 2: Is whorl initialized?
+    # Check 2: Is Whorl initialized?
     whorl_home = Path.home() / ".whorl"
     if not whorl_home.exists():
         return False, (
             "[red]Whorl not initialized.[/red]\n\n"
-            "Run the following to set up whorl:\n"
+            "Run the following to set up Whorl:\n"
             "  [cyan]whorl init[/cyan]\n\n"
             "Then add documents to [cyan]~/.whorl/docs/[/cyan]"
         )
@@ -88,22 +90,22 @@ def check_whorl_setup(console: Console) -> tuple[bool, str]:
             "Add documents to your knowledge base:\n"
             "  [cyan]whorl upload ~/notes[/cyan]  # Upload a folder\n"
             "  Or copy files to [cyan]~/.whorl/docs/[/cyan]\n\n"
-            "Continuing without whorl integration..."
+            "Continuing without Whorl integration..."
         )
 
     return True, ""
 
 
 def ensure_whorl_running(console: Console) -> bool:
-    """Ensure the whorl server is running.
+    """Ensure the Whorl server is running.
 
     Args:
         console: Rich console for output
 
     Returns:
-        True if whorl is running, False if failed to start
+        True if Whorl is running, False if failed to start
     """
-    # First check if whorl is properly set up
+    # First check if Whorl is properly set up
     is_ready, error_msg = check_whorl_setup(console)
     if not is_ready:
         console.print(error_msg)
@@ -111,7 +113,7 @@ def ensure_whorl_running(console: Console) -> bool:
         if "no documents" not in error_msg.lower():
             return False
 
-    # Check if whorl is already running
+    # Check if Whorl is already running
     try:
         response = httpx.get(f"http://localhost:{WHORL_PORT}/health", timeout=2.0)
         if response.status_code == 200:
@@ -120,8 +122,8 @@ def ensure_whorl_running(console: Console) -> bool:
     except httpx.RequestError:
         pass
 
-    # Try to start whorl server
-    console.print(f"[yellow]Starting whorl server on port {WHORL_PORT}...[/yellow]")
+    # Try to start Whorl server
+    console.print(f"[yellow]Starting Whorl server on port {WHORL_PORT}...[/yellow]")
     try:
         WHORL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(WHORL_LOG_PATH, "a") as log_file:
@@ -143,14 +145,14 @@ def ensure_whorl_running(console: Console) -> bool:
             except httpx.RequestError:
                 continue
 
-        console.print(f"[red]Failed to start whorl server. Check {WHORL_LOG_PATH}[/red]")
+        console.print(f"[red]Failed to start Whorl server. Check {WHORL_LOG_PATH}[/red]")
         return False
 
     except FileNotFoundError:
-        console.print("[red]whorl command not found. Install with: pip install whorled[/red]")
+        console.print("[red]Whorl command not found. Install with: pip install whorled[/red]")
         return False
     except Exception as e:
-        console.print(f"[red]Failed to start whorl: {e}[/red]")
+        console.print(f"[red]Failed to start Whorl: {e}[/red]")
         return False
 
 
@@ -180,6 +182,7 @@ class DiscoveryResult:
     cost_usd: Optional[float] = None
     raw_response: Optional[str] = None
     html_style: Optional[HtmlStyle] = None
+    html_path: Optional[Path] = None
 
 
 class SerendipityAgent:
@@ -191,6 +194,8 @@ class SerendipityAgent:
         model: str = "opus",
         verbose: bool = False,
         whorl: bool = False,
+        server_port: int = 9876,
+        template_path: Optional[Path] = None,
     ):
         """Initialize the Serendipity agent.
 
@@ -198,32 +203,47 @@ class SerendipityAgent:
             console: Rich console for output
             model: Claude model to use (haiku, sonnet, opus)
             verbose: Show detailed progress
-            whorl: Enable whorl integration for personalized context
+            whorl: Enable Whorl integration for personalized context
+            server_port: Port for the feedback server
+            template_path: Path to HTML template (defaults to package template)
         """
         self.console = console or Console()
         self.model = model
         self.verbose = verbose
         self.whorl = whorl
+        self.server_port = server_port
         self.prompt_template = PROMPT_TEMPLATE.read_text()
+        # Use provided template path or fall back to package default
+        template_file = template_path or BASE_TEMPLATE
+        self.base_template = template_file.read_text()
+        self.frontend_design = FRONTEND_DESIGN.read_text() if FRONTEND_DESIGN.exists() else ""
+        self.output_dir = OUTPUT_DIR
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.last_session_id: Optional[str] = None
         self.cost_usd: Optional[float] = None
 
-        # Initialize whorl if enabled
+        # Initialize Whorl if enabled
         if self.whorl:
             if not ensure_whorl_running(self.console):
-                self.console.print("[yellow]Continuing without whorl integration[/yellow]")
+                self.console.print("[yellow]Continuing without Whorl integration[/yellow]")
                 self.whorl = False
 
-    def _get_plugins(self) -> list[dict]:
-        """Get plugin configurations.
+    def _get_mcp_servers(self) -> dict:
+        """Get MCP server configurations for Whorl.
 
         Returns:
-            List of plugin configs for ClaudeAgentOptions
+            Dict of MCP server configs for ClaudeAgentOptions
         """
-        plugins = []
+        servers = {}
         if self.whorl:
-            plugins.append({"type": "local", "path": str(WHORL_PLUGIN_PATH)})
-        return plugins
+            servers["whorl"] = {
+                "url": f"http://localhost:{WHORL_PORT}/mcp/",
+                "type": "http",
+                "headers": {
+                    "X-Password": "whorl",  # Default Whorl password
+                },
+            }
+        return servers
 
     async def discover(
         self,
@@ -245,6 +265,10 @@ class SerendipityAgent:
         Returns:
             DiscoveryResult with recommendations
         """
+        # Generate output path for this discovery
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_path = self.output_dir / f"discovery_{timestamp}.html"
+
         # Build full context
         full_context_parts = []
         if context_augmentation:
@@ -259,12 +283,14 @@ class SerendipityAgent:
             user_context=full_context,
             n1=n1,
             n2=n2,
+            template_content=self.base_template,
+            frontend_design=self.frontend_design,
         )
 
-        # Build allowed tools list
+        # Build allowed tools list - no Write needed, we handle HTML assembly
         allowed_tools = ["WebFetch", "WebSearch"]
 
-        # Add whorl MCP tools if enabled
+        # Add Whorl MCP tools if enabled
         if self.whorl:
             allowed_tools.extend([
                 "mcp__whorl__text_search_text_search_post",
@@ -273,18 +299,20 @@ class SerendipityAgent:
                 "mcp__whorl__bash_bash_post",
             ])
 
-        # Build options with plugins if whorl is enabled
-        plugins = self._get_plugins()
+        # Build options with MCP servers if Whorl is enabled
+        mcp_servers = self._get_mcp_servers()
         options = ClaudeAgentOptions(
             model=self.model,
             system_prompt="You are a discovery engine." + (
-                " You have access to the user's personal knowledge base via whorl. "
-                "Search it FIRST to understand their preferences and interests before making recommendations."
+                " You have access to the user's personal knowledge base via Whorl MCP tools. "
+                "IMPORTANT: Search Whorl FIRST using mcp__whorl__text_search_text_search_post "
+                "to understand their preferences, interests, and past writings before making recommendations. "
+                "This makes your recommendations much more personalized."
                 if self.whorl else ""
             ),
-            max_turns=50 if self.whorl else 20,  # More turns for whorl searches
+            max_turns=50,
             allowed_tools=allowed_tools,
-            plugins=plugins if plugins else None,
+            mcp_servers=mcp_servers if mcp_servers else None,
         )
 
         response_text = []
@@ -351,19 +379,34 @@ class SerendipityAgent:
         self.last_session_id = session_id
         self.cost_usd = cost_usd
 
-        # Parse JSON from response
+        # Parse response with separate extractors for recommendations and CSS
         full_response = "".join(response_text)
-        parsed = self._parse_json(full_response)
+        parsed = self._parse_response(full_response)
 
-        # Extract html_style if present
+        # Build HTML from template
+        html_content = self.base_template
+        html_content = html_content.replace("{css}", parsed.get("css", ""))
+        html_content = html_content.replace(
+            "{convergent_html}",
+            self._render_recommendations(parsed.get("convergent", []))
+        )
+        html_content = html_content.replace(
+            "{divergent_html}",
+            self._render_recommendations(parsed.get("divergent", []))
+        )
+        html_content = html_content.replace("{session_id}", session_id)
+        html_content = html_content.replace("{server_port}", str(self.server_port))
+
+        # Write HTML to output
+        output_path.write_text(html_content)
+
+        # Extract html_style for result
         html_style = None
-        if "html_style" in parsed:
-            style_data = parsed["html_style"]
-            if isinstance(style_data, dict):
-                html_style = HtmlStyle(
-                    description=style_data.get("description", ""),
-                    css=style_data.get("css", ""),
-                )
+        if parsed.get("css"):
+            html_style = HtmlStyle(
+                description="Custom CSS from Claude",
+                css=parsed.get("css", ""),
+            )
 
         return DiscoveryResult(
             convergent=[
@@ -378,6 +421,7 @@ class SerendipityAgent:
             cost_usd=cost_usd,
             raw_response=full_response,
             html_style=html_style,
+            html_path=output_path,
         )
 
     async def get_more(
@@ -385,6 +429,7 @@ class SerendipityAgent:
         session_id: str,
         rec_type: str,
         count: int = 5,
+        session_feedback: list[dict] = None,
     ) -> list[Recommendation]:
         """Get more recommendations by resuming a session.
 
@@ -392,6 +437,7 @@ class SerendipityAgent:
             session_id: Session ID to resume
             rec_type: Type of recommendations ("convergent" or "divergent")
             count: Number of additional recommendations
+            session_feedback: Feedback from current session [{"url": "...", "feedback": "liked"|"disliked"}]
 
         Returns:
             List of new recommendations
@@ -402,7 +448,19 @@ class SerendipityAgent:
             else "divergent (expanding their palette)"
         )
 
-        prompt = f"""Give me {count} more {type_description} recommendations, different from what you've already suggested.
+        # Build feedback context from current session
+        feedback_context = ""
+        if session_feedback:
+            liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
+            disliked = [f["url"] for f in session_feedback if f.get("feedback") == "disliked"]
+            if liked:
+                feedback_context += "\n\nFrom this session, the user LIKED:\n" + "\n".join(f"- {u}" for u in liked)
+            if disliked:
+                feedback_context += "\n\nFrom this session, the user DISLIKED:\n" + "\n".join(f"- {u}" for u in disliked)
+            if feedback_context:
+                feedback_context += "\n\nUse this feedback to refine your next recommendations."
+
+        prompt = f"""Give me {count} more {type_description} recommendations, different from what you've already suggested.{feedback_context}
 
 Output as JSON:
 {{
@@ -419,13 +477,13 @@ Output as JSON:
                 "mcp__whorl__bash_bash_post",
             ])
 
-        plugins = self._get_plugins()
+        mcp_servers = self._get_mcp_servers()
         options = ClaudeAgentOptions(
             model=self.model,
             system_prompt="You are a discovery engine.",
-            max_turns=50 if self.whorl else 10,
+            max_turns=50,
             allowed_tools=allowed_tools,
-            plugins=plugins if plugins else None,
+            mcp_servers=mcp_servers if mcp_servers else None,
             resume=session_id,  # Resume the previous session
         )
 
@@ -501,9 +559,98 @@ Output as JSON:
             for r in parsed.get(rec_type, [])
         ]
 
+    def _parse_response(self, text: str) -> dict:
+        """Extract recommendations and CSS from response text.
+
+        Parses separate <recommendations> JSON and <css> sections to avoid
+        JSON parsing failures from CSS special characters.
+        """
+        result = {"convergent": [], "divergent": [], "css": ""}
+
+        # Extract recommendations JSON from <recommendations> tags
+        rec_match = re.search(r"<recommendations>\s*(.*?)\s*</recommendations>", text, re.DOTALL)
+        if rec_match:
+            try:
+                data = json.loads(rec_match.group(1))
+                result["convergent"] = data.get("convergent", [])
+                result["divergent"] = data.get("divergent", [])
+            except json.JSONDecodeError:
+                self.console.print("[yellow]Warning: Could not parse recommendations JSON[/yellow]")
+                # Fallback: try to extract URLs at minimum
+                pass
+
+        # Extract CSS from <css> tags (no JSON parsing needed)
+        css_match = re.search(r"<css>\s*(.*?)\s*</css>", text, re.DOTALL)
+        if css_match:
+            result["css"] = css_match.group(1)
+
+        # Fallback: try legacy formats if no recommendations found
+        if not result["convergent"] and not result["divergent"]:
+            # Try <output> tags
+            output_match = re.search(r"<output>\s*(.*?)\s*</output>", text, re.DOTALL)
+            if output_match:
+                try:
+                    data = json.loads(output_match.group(1))
+                    result["convergent"] = data.get("convergent", [])
+                    result["divergent"] = data.get("divergent", [])
+                except json.JSONDecodeError:
+                    pass
+
+            # Try JSON code block
+            if not result["convergent"] and not result["divergent"]:
+                json_match = re.search(r"```json?\s*(.*?)\s*```", text, re.DOTALL)
+                if json_match:
+                    try:
+                        data = json.loads(json_match.group(1))
+                        result["convergent"] = data.get("convergent", [])
+                        result["divergent"] = data.get("divergent", [])
+                    except json.JSONDecodeError:
+                        pass
+
+        if not result["convergent"] and not result["divergent"]:
+            self.console.print("[yellow]Warning: Could not parse recommendations from response[/yellow]")
+
+        return result
+
+    def _render_recommendations(self, recs: list) -> str:
+        """Render recommendations list as HTML.
+
+        Args:
+            recs: List of recommendation dicts with url and reason
+
+        Returns:
+            HTML string with recommendation cards
+        """
+        if not recs:
+            return ""
+
+        html_parts = []
+        for r in recs:
+            url = r.get("url", "")
+            reason = r.get("reason", "")
+            # Escape HTML in reason to prevent XSS
+            reason = reason.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            html_parts.append(f'''            <div class="recommendation" data-url="{url}">
+                <a href="{url}" target="_blank" rel="noopener">{url}</a>
+                <p class="reason">{reason}</p>
+                <div class="actions">
+                    <button onclick="feedback(this, 'liked')">👍</button>
+                    <button onclick="feedback(this, 'disliked')">👎</button>
+                </div>
+            </div>''')
+        return "\n".join(html_parts)
+
     def _parse_json(self, text: str) -> dict:
-        """Extract JSON from response text."""
-        # Try to find <output> tags first
+        """Extract JSON from response text (legacy method for get_more)."""
+        # Try to find <recommendations> tags first (new format)
+        rec_match = re.search(r"<recommendations>\s*(.*?)\s*</recommendations>", text, re.DOTALL)
+        if rec_match:
+            try:
+                return json.loads(rec_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Try <output> tags (legacy format, takes priority over code blocks)
         output_match = re.search(r"<output>\s*(.*?)\s*</output>", text, re.DOTALL)
         if output_match:
             try:
@@ -566,6 +713,7 @@ Output as JSON:
         session_id: str,
         rec_type: str,
         count: int = 5,
+        session_feedback: list[dict] = None,
     ) -> list[Recommendation]:
         """Sync wrapper for get_more.
 
@@ -573,11 +721,12 @@ Output as JSON:
             session_id: Session ID to resume
             rec_type: Type of recommendations
             count: Number of additional recommendations
+            session_feedback: Feedback from current session
 
         Returns:
             List of new recommendations
         """
-        return asyncio.run(self.get_more(session_id, rec_type, count))
+        return asyncio.run(self.get_more(session_id, rec_type, count, session_feedback))
 
     def get_resume_command(self) -> Optional[str]:
         """Get the command to resume the last session.

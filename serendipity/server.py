@@ -2,9 +2,8 @@
 
 import asyncio
 import json
-import signal
-import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from aiohttp import web
@@ -21,25 +20,30 @@ class FeedbackServer:
         on_more_request: Optional[Callable] = None,
         idle_timeout: int = 600,  # 10 minutes
         html_content: Optional[str] = None,
+        static_dir: Optional[Path] = None,
     ):
         """Initialize feedback server.
 
         Args:
             storage: Storage manager for persisting feedback
-            on_more_request: Callback for "more" requests. Called with (session_id, type, count).
+            on_more_request: Callback for "more" requests. Called with (session_id, type, count, session_feedback).
             idle_timeout: Seconds of inactivity before auto-shutdown
-            html_content: Optional HTML content to serve at /
+            html_content: Optional HTML content to serve at / (legacy mode)
+            static_dir: Optional directory to serve static files from
         """
         self.storage = storage
         self.on_more_request = on_more_request
         self.idle_timeout = idle_timeout
         self.html_content = html_content
+        self.static_dir = static_dir
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
         self._last_activity = datetime.now()
         self._shutdown_task: Optional[asyncio.Task] = None
         self._running = False
+        # Session context storage for /context endpoint
+        self.session_inputs: dict[str, str] = {}  # session_id -> user_input
 
     async def start(self, port: int) -> None:
         """Start the feedback server.
@@ -48,12 +52,20 @@ class FeedbackServer:
             port: Port to listen on
         """
         self._app = web.Application()
-        self._app.router.add_get("/", self._handle_index)
         self._app.router.add_post("/feedback", self._handle_feedback)
         self._app.router.add_post("/more", self._handle_more)
         self._app.router.add_get("/health", self._handle_health)
+        self._app.router.add_get("/context", self._handle_context)
         self._app.router.add_options("/feedback", self._handle_cors)
         self._app.router.add_options("/more", self._handle_cors)
+        self._app.router.add_options("/context", self._handle_cors)
+
+        # Serve static files from static_dir if provided, otherwise use legacy html_content
+        if self.static_dir:
+            self._app.router.add_get("/{filename}", self._handle_static_file)
+            self._app.router.add_get("/", self._handle_index)
+        else:
+            self._app.router.add_get("/", self._handle_index)
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
@@ -113,6 +125,62 @@ class FeedbackServer:
             headers=self._cors_headers(),
         )
 
+    async def _handle_context(self, request: web.Request) -> web.Response:
+        """Return context data for the context panel.
+
+        Returns JSON with:
+        - rules: Discovery rules from rules.md
+        - history: Recent history entries with feedback
+        - history_summary: Summary file content if exists
+        - user_input: The user's input for this session
+        """
+        self._update_activity()
+        session_id = request.query.get("session_id", "")
+
+        # Load rules
+        rules = self.storage.load_rules()
+
+        # Load recent history (last 20 items)
+        recent_history = self.storage.load_recent_history(20)
+        history_data = [
+            {
+                "url": e.url,
+                "reason": e.reason,
+                "type": e.type,
+                "feedback": e.feedback,
+                "timestamp": e.timestamp,
+            }
+            for e in recent_history
+        ]
+
+        # Load history summary if exists
+        summary_path = self.storage.base_dir / "history_summary.txt"
+        history_summary = ""
+        if summary_path.exists():
+            history_summary = summary_path.read_text()
+
+        # Get user input for this session
+        user_input = self.session_inputs.get(session_id, "")
+
+        return web.json_response(
+            {
+                "rules": rules,
+                "history": history_data,
+                "history_summary": history_summary,
+                "user_input": user_input,
+            },
+            headers=self._cors_headers(),
+        )
+
+    def register_session_input(self, session_id: str, user_input: str) -> None:
+        """Register user input for a session.
+
+        Args:
+            session_id: The session ID
+            user_input: The user's discovery input/context
+        """
+        self.session_inputs[session_id] = user_input
+
     async def _handle_index(self, request: web.Request) -> web.Response:
         """Serve the HTML page."""
         self._update_activity()
@@ -124,6 +192,33 @@ class FeedbackServer:
         return web.Response(
             text="<html><body><h1>Serendipity</h1><p>No content available.</p></body></html>",
             content_type="text/html",
+        )
+
+    async def _handle_static_file(self, request: web.Request) -> web.Response:
+        """Serve static files from static_dir."""
+        self._update_activity()
+
+        if not self.static_dir:
+            return web.Response(status=404, text="Not found")
+
+        filename = request.match_info.get("filename", "")
+        if not filename:
+            return web.Response(status=404, text="Not found")
+
+        # Security: prevent path traversal
+        if ".." in filename or filename.startswith("/"):
+            return web.Response(status=403, text="Forbidden")
+
+        file_path = self.static_dir / filename
+        if not file_path.exists() or not file_path.is_file():
+            return web.Response(status=404, text="Not found")
+
+        # Determine content type
+        content_type = "text/html" if filename.endswith(".html") else "application/octet-stream"
+
+        return web.Response(
+            text=file_path.read_text(),
+            content_type=content_type,
         )
 
     async def _handle_feedback(self, request: web.Request) -> web.Response:
@@ -180,7 +275,10 @@ class FeedbackServer:
         {
             "session_id": "abc123",
             "type": "convergent" | "divergent",
-            "count": 5
+            "count": 5,
+            "session_feedback": [  // Optional: feedback from current session
+                {"url": "...", "feedback": "liked" | "disliked"}
+            ]
         }
         """
         self._update_activity()
@@ -197,6 +295,7 @@ class FeedbackServer:
         session_id = data.get("session_id")
         rec_type = data.get("type")
         count = data.get("count", 5)
+        session_feedback = data.get("session_feedback", [])  # NEW: live feedback from session
 
         if not all([session_id, rec_type]):
             return web.json_response(
@@ -220,8 +319,8 @@ class FeedbackServer:
             )
 
         try:
-            # Call the callback to get more recommendations
-            result = await self.on_more_request(session_id, rec_type, count)
+            # Call the callback to get more recommendations (now with session_feedback)
+            result = await self.on_more_request(session_id, rec_type, count, session_feedback)
 
             return web.json_response(
                 {"success": True, "recommendations": result},
@@ -233,44 +332,3 @@ class FeedbackServer:
                 status=500,
                 headers=self._cors_headers(),
             )
-
-
-async def run_server_with_timeout(
-    storage: StorageManager,
-    port: int,
-    on_more_request: Optional[Callable] = None,
-    idle_timeout: int = 600,
-) -> None:
-    """Run the feedback server until idle timeout or interrupt.
-
-    Args:
-        storage: Storage manager
-        port: Port to listen on
-        on_more_request: Callback for "more" requests
-        idle_timeout: Seconds of inactivity before auto-shutdown
-    """
-    server = FeedbackServer(
-        storage=storage,
-        on_more_request=on_more_request,
-        idle_timeout=idle_timeout,
-    )
-
-    # Handle Ctrl+C
-    loop = asyncio.get_event_loop()
-    stop_event = asyncio.Event()
-
-    def signal_handler():
-        stop_event.set()
-
-    if sys.platform != "win32":
-        loop.add_signal_handler(signal.SIGINT, signal_handler)
-        loop.add_signal_handler(signal.SIGTERM, signal_handler)
-
-    await server.start(port)
-
-    try:
-        await stop_event.wait()
-    except asyncio.CancelledError:
-        pass
-    finally:
-        await server.stop()
