@@ -23,8 +23,10 @@ from claude_agent_sdk import (
 )
 from rich.console import Console
 
+from serendipity.config.types import TypesConfig
 from serendipity.display import AgentDisplay, DisplayConfig
 from serendipity.models import HtmlStyle, Recommendation
+from serendipity.prompts.builder import PromptBuilder
 from serendipity.resources import get_base_template, get_discovery_prompt, get_frontend_design
 
 # Type hint import to avoid circular import
@@ -76,6 +78,7 @@ class SerendipityAgent:
         server_port: int = 9876,
         template_path: Optional[Path] = None,
         max_thinking_tokens: Optional[int] = None,
+        types_config: Optional[TypesConfig] = None,
     ):
         """Initialize the Serendipity agent.
 
@@ -87,6 +90,7 @@ class SerendipityAgent:
             server_port: Port for the feedback server
             template_path: Path to HTML template (defaults to package template)
             max_thinking_tokens: Max tokens for extended thinking (None=disabled)
+            types_config: TypesConfig for approach/media type guidance
         """
         self.console = console or Console()
         self.model = model
@@ -94,6 +98,8 @@ class SerendipityAgent:
         self.context_manager = context_manager
         self.server_port = server_port
         self.max_thinking_tokens = max_thinking_tokens
+        self.types_config = types_config or TypesConfig.default()
+        self.prompt_builder = PromptBuilder(self.types_config)
         self.prompt_template = get_discovery_prompt()
         # Use provided template path or fall back to package default
         if template_path:
@@ -140,8 +146,6 @@ class SerendipityAgent:
     async def discover(
         self,
         context: str,
-        n1: int = 5,
-        n2: int = 5,
         context_augmentation: str = "",
         style_guidance: str = "",
     ) -> DiscoveryResult:
@@ -149,13 +153,11 @@ class SerendipityAgent:
 
         Args:
             context: User's context (text, links, instructions)
-            n1: Number of convergent recommendations
-            n2: Number of divergent recommendations
             context_augmentation: Additional context (preferences, history)
             style_guidance: Style guidance for HTML output
 
         Returns:
-            DiscoveryResult with recommendations
+            DiscoveryResult with recommendations (count from settings.total_count)
         """
         # Generate output path for this discovery
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -171,12 +173,14 @@ class SerendipityAgent:
 
         full_context = "\n\n".join(full_context_parts)
 
+        # Build type guidance from config (includes total_count, approaches, media types)
+        type_guidance = self.prompt_builder.build_type_guidance()
+
         prompt = self.prompt_template.format(
             user_context=full_context,
-            n1=n1,
-            n2=n2,
             template_content=self.base_template,
             frontend_design=self.frontend_design,
+            type_guidance=type_guidance,
         )
 
         # Build allowed tools list from context sources
@@ -275,13 +279,12 @@ class SerendipityAgent:
         # Build HTML from template
         html_content = self.base_template
         html_content = html_content.replace("{css}", parsed.get("css", ""))
+
+        # Combine all recommendations into a single list for masonry grid
+        all_recs = parsed.get("convergent", []) + parsed.get("divergent", [])
         html_content = html_content.replace(
-            "{convergent_html}",
-            self._render_recommendations(parsed.get("convergent", []))
-        )
-        html_content = html_content.replace(
-            "{divergent_html}",
-            self._render_recommendations(parsed.get("divergent", []))
+            "{recommendations_html}",
+            self._render_recommendations(all_recs)
         )
         html_content = html_content.replace("{session_id}", session_id)
         html_content = html_content.replace("{server_port}", str(self.server_port))
@@ -525,6 +528,12 @@ Output as JSON:
             """Escape HTML special characters."""
             return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
+        # Map approach to display label
+        approach_labels = {
+            "convergent": "More Like This",
+            "divergent": "Surprise",
+        }
+
         html_parts = []
         for rec in recs:
             url = escape_html(rec.url)
@@ -532,41 +541,49 @@ Output as JSON:
             approach = escape_html(rec.approach)
             media_type = escape_html(rec.media_type)
 
+            # Approach and media labels for tags
+            approach_label = approach_labels.get(rec.approach, rec.approach.title())
+            media_label = rec.media_type.title() if rec.media_type else "Article"
+
             # Build optional thumbnail slot
-            thumbnail_slot = ""
+            thumbnail_html = ""
             if rec.thumbnail_url:
-                thumbnail_slot = f'''
-                <div class="rec-media" data-has-media="true">
+                thumbnail_html = f'''
+                <div class="card-media">
                     <img src="{escape_html(rec.thumbnail_url)}" loading="lazy" alt="">
                 </div>'''
 
             # Build title/URL display
             if rec.title:
-                title_slot = f'<span class="rec-title-text">{escape_html(rec.title)}</span>'
+                title_html = f'<a href="{url}" class="card-link" target="_blank" rel="noopener">{escape_html(rec.title)}</a>'
             else:
-                title_slot = f'<span class="rec-url-text">{url}</span>'
+                title_html = f'<a href="{url}" class="card-link card-url" target="_blank" rel="noopener">{url}</a>'
 
             # Build metadata slot from type-specific fields
-            metadata_slot = ""
+            metadata_html = ""
             if rec.metadata:
                 meta_items = []
                 for key, value in rec.metadata.items():
-                    meta_items.append(f'<span class="meta-item" data-key="{escape_html(key)}">{escape_html(str(value))}</span>')
+                    if value:
+                        meta_items.append(f'<span>{escape_html(key)}: {escape_html(str(value))}</span>')
                 if meta_items:
-                    metadata_slot = f'<div class="rec-meta">{" · ".join(meta_items)}</div>'
+                    metadata_html = f'<div class="card-meta">{" ".join(meta_items)}</div>'
 
-            html_parts.append(f'''            <div class="recommendation" data-url="{url}" data-approach="{approach}" data-media="{media_type}">
-                {thumbnail_slot}
-                <div class="rec-content">
-                    <a href="{url}" target="_blank" rel="noopener" class="rec-link">{title_slot}</a>
-                    {metadata_slot}
-                    <p class="reason">{reason}</p>
-                </div>
-                <div class="actions">
-                    <button onclick="feedback(this, 'liked')">👍</button>
-                    <button onclick="feedback(this, 'disliked')">👎</button>
-                </div>
-            </div>''')
+            html_parts.append(f'''        <div class="card" data-url="{url}" data-approach="{approach}" data-media="{media_type}">
+            <div class="card-tags">
+                <span class="tag approach {approach}">{approach_label}</span>
+                <span class="tag media {media_type}">{media_label}</span>
+            </div>{thumbnail_html}
+            <div class="card-content">
+                {title_html}
+                {metadata_html}
+                <p class="card-reason">{reason}</p>
+            </div>
+            <div class="card-actions">
+                <button onclick="feedback(this, 'liked')">👍</button>
+                <button onclick="feedback(this, 'disliked')">👎</button>
+            </div>
+        </div>''')
         return "\n".join(html_parts)
 
     def _parse_json(self, text: str) -> dict:
@@ -610,8 +627,6 @@ Output as JSON:
     def run_sync(
         self,
         context: str,
-        n1: int = 5,
-        n2: int = 5,
         context_augmentation: str = "",
         style_guidance: str = "",
     ) -> DiscoveryResult:
@@ -619,8 +634,6 @@ Output as JSON:
 
         Args:
             context: User's context
-            n1: Number of convergent recommendations
-            n2: Number of divergent recommendations
             context_augmentation: Additional context (preferences, history)
             style_guidance: Style guidance for HTML output
 
@@ -630,8 +643,6 @@ Output as JSON:
         return asyncio.run(
             self.discover(
                 context,
-                n1,
-                n2,
                 context_augmentation=context_augmentation,
                 style_guidance=style_guidance,
             )

@@ -4,12 +4,12 @@ Defines the two-dimensional config schema:
 - Approaches: How to find recommendations (convergent, divergent, etc.)
 - Media: What format of content (youtube, book, article, etc.)
 
-A recommendation is always {approach} × {media}.
+Simple by default: just enable/disable what you want.
+The agent reads your taste.md and decides the distribution.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
 
 import yaml
 
@@ -33,10 +33,7 @@ class ApproachType:
     """An approach type for finding recommendations."""
     name: str
     display_name: str
-    description: str
     enabled: bool = True
-    weight: float = 0.5
-    count: Optional[int] = None  # Hard limit (overrides weight)
     prompt_hint: str = ""
 
     @classmethod
@@ -44,10 +41,7 @@ class ApproachType:
         return cls(
             name=name,
             display_name=data.get("display_name", name.title()),
-            description=data.get("description", ""),
             enabled=data.get("enabled", True),
-            weight=data.get("weight", 0.5),
-            count=data.get("count"),
             prompt_hint=data.get("prompt_hint", ""),
         )
 
@@ -57,10 +51,8 @@ class MediaType:
     """A media type for recommendations."""
     name: str
     display_name: str
-    description: str
     enabled: bool = True
-    weight: float = 0.2
-    count: Optional[int] = None  # Hard limit (overrides weight)
+    preference: str = ""  # Natural language hint to nudge the agent
     sources: list[Source] = field(default_factory=list)
     prompt_hint: str = ""
     metadata_schema: list[MetadataField] = field(default_factory=list)
@@ -84,10 +76,8 @@ class MediaType:
         return cls(
             name=name,
             display_name=data.get("display_name", name.title()),
-            description=data.get("description", ""),
             enabled=data.get("enabled", True),
-            weight=data.get("weight", 0.2),
-            count=data.get("count"),
+            preference=data.get("preference", ""),
             sources=sources,
             prompt_hint=data.get("prompt_hint", ""),
             metadata_schema=metadata_schema,
@@ -123,22 +113,24 @@ class ContextSourceConfig:
 
 @dataclass
 class TypesConfig:
-    """Configuration for recommendation types.
+    """Serendipity settings - single source of truth.
 
-    Two orthogonal dimensions:
-    - approaches: How to find (convergent, divergent, etc.)
-    - media: What format (youtube, book, article, etc.)
-
-    Plus context sources for user context:
+    All configuration in one file (~/.serendipity/settings.yaml):
+    - model, total_count, feedback_server_port: Runtime settings
+    - approaches: How to find (convergent, divergent)
+    - media: What format (article, youtube, book, podcast)
     - context_sources: Where to get user profile/preferences
+
+    Simple by default: just enable/disable what you want.
+    The agent reads your taste.md and decides the distribution.
     """
-    version: int = 1
+    version: int = 2
+    model: str = "opus"
+    total_count: int = 10
+    feedback_server_port: int = 9876
     approaches: dict[str, ApproachType] = field(default_factory=dict)
     media: dict[str, MediaType] = field(default_factory=dict)
     context_sources: dict[str, ContextSourceConfig] = field(default_factory=dict)
-    overrides: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
-    total_count: int = 10
-    agent_mode: str = "autonomous"  # "autonomous" or "strict"
 
     @classmethod
     def from_dict(cls, data: dict) -> "TypesConfig":
@@ -156,13 +148,13 @@ class TypesConfig:
             context_sources[name] = ContextSourceConfig.from_dict(name, cs_data)
 
         return cls(
-            version=data.get("version", 1),
+            version=data.get("version", 2),
+            model=data.get("model", "opus"),
+            total_count=data.get("total_count", 10),
+            feedback_server_port=data.get("feedback_server_port", 9876),
             approaches=approaches,
             media=media,
             context_sources=context_sources,
-            overrides=data.get("overrides", {}),
-            total_count=data.get("total_count", 10),
-            agent_mode=data.get("agent_mode", "autonomous"),
         )
 
     @classmethod
@@ -178,26 +170,26 @@ class TypesConfig:
     def default(cls) -> "TypesConfig":
         """Load default configuration from package resource.
 
-        Single source of truth: serendipity/config/defaults/types.yaml
+        Single source of truth: serendipity/config/defaults/settings.yaml
         """
-        from serendipity.resources import get_default_types_yaml
-        content = get_default_types_yaml()
+        from serendipity.resources import get_default_settings_yaml
+        content = get_default_settings_yaml()
         data = yaml.safe_load(content) or {}
         return cls.from_dict(data)
 
     @classmethod
     def write_defaults(cls, path: Path) -> None:
-        """Write default types.yaml to the given path.
+        """Write default settings.yaml to the given path.
 
         Copies the package default to user's config directory.
         """
-        from serendipity.resources import get_default_types_yaml
+        from serendipity.resources import get_default_settings_yaml
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(get_default_types_yaml())
+        path.write_text(get_default_settings_yaml())
 
     @classmethod
     def reset(cls, path: Path) -> None:
-        """Reset types.yaml to defaults (overwrites existing)."""
+        """Reset settings.yaml to defaults (overwrites existing)."""
         cls.write_defaults(path)
 
     def get_enabled_approaches(self) -> list[ApproachType]:
@@ -207,27 +199,3 @@ class TypesConfig:
     def get_enabled_media(self) -> list[MediaType]:
         """Get list of enabled media types."""
         return [m for m in self.media.values() if m.enabled]
-
-    def calculate_distribution(self) -> dict[str, dict[str, float]]:
-        """Calculate approach × media → count distribution matrix.
-
-        Returns:
-            Nested dict: {approach_name: {media_name: expected_count}}
-        """
-        matrix = {}
-        total = self.total_count
-
-        for approach in self.get_enabled_approaches():
-            matrix[approach.name] = {}
-
-            for media in self.get_enabled_media():
-                # Check for override
-                override = self.overrides.get(approach.name, {}).get(media.name, {})
-                if "weight" in override:
-                    weight = override["weight"]
-                else:
-                    weight = approach.weight * media.weight
-
-                matrix[approach.name][media.name] = round(weight * total, 1)
-
-        return matrix

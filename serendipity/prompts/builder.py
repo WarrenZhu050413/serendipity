@@ -3,7 +3,7 @@
 Compiles TypesConfig into prompt sections with:
 - Approach descriptions
 - Media type descriptions with search patterns
-- Distribution matrix
+- Agent guidance (you choose the distribution)
 - Output JSON schema
 """
 
@@ -39,7 +39,6 @@ class PromptBuilder:
         lines = ["## APPROACH TYPES (how to find)", ""]
         for approach in self.config.get_enabled_approaches():
             lines.append(f"### {approach.display_name}")
-            lines.append(f"*{approach.description}*")
             if approach.prompt_hint:
                 lines.append("")
                 lines.append(approach.prompt_hint.strip())
@@ -52,7 +51,6 @@ class PromptBuilder:
         for media in self.config.get_enabled_media():
             icon = MEDIA_ICONS.get(media.name, "📄")
             lines.append(f"### {icon} {media.display_name}")
-            lines.append(f"*{media.description}*")
 
             # Add search sources
             if media.sources:
@@ -75,36 +73,25 @@ class PromptBuilder:
             lines.append("")
         return "\n".join(lines)
 
-    def build_distribution_table(self) -> str:
-        """Generate distribution guidance table."""
-        matrix = self.config.calculate_distribution()
-        approaches = list(matrix.keys())
-        media_types = list(self.config.get_enabled_media())
+    def build_distribution_guidance(self) -> str:
+        """Generate simple guidance for the agent to choose distribution."""
+        media_types = self.config.get_enabled_media()
 
-        lines = ["## RECOMMENDED DISTRIBUTION", ""]
-
-        if self.config.agent_mode == "autonomous":
-            lines.append("*Use your judgment to adjust based on context quality.*")
-        else:
-            lines.append("*Follow these counts strictly.*")
-        lines.append("")
-
-        # Build markdown table
-        header = "| Approach | " + " | ".join(m.display_name for m in media_types) + " |"
-        separator = "|----------|" + "|".join("-" * len(m.display_name) for m in media_types) + "|"
-
-        lines.append(header)
-        lines.append(separator)
-
-        for approach_name in approaches:
-            row = f"| {approach_name.title()} |"
-            for media in media_types:
-                count = matrix.get(approach_name, {}).get(media.name, 0)
-                row += f" ~{count:.0f} |"
-            lines.append(row)
-
-        lines.append("")
+        lines = ["## DISTRIBUTION", ""]
         lines.append(f"**Total: {self.config.total_count} recommendations**")
+        lines.append("")
+        lines.append("You choose the distribution based on the user's taste.md and context.")
+        lines.append("Balance between approaches and media types as you see fit.")
+        lines.append("")
+
+        # Show any preference hints
+        prefs = [(m.display_name, m.preference) for m in media_types if m.preference]
+        if prefs:
+            lines.append("**User preferences:**")
+            for name, pref in prefs:
+                lines.append(f"- {name}: {pref}")
+            lines.append("")
+
         return "\n".join(lines)
 
     def build_output_schema(self) -> str:
@@ -142,7 +129,7 @@ class PromptBuilder:
         sections = [
             self.build_approach_section(),
             self.build_media_section(),
-            self.build_distribution_table(),
+            self.build_distribution_guidance(),
             self.build_output_schema(),
         ]
         return "\n\n".join(sections)

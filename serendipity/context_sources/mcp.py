@@ -66,7 +66,7 @@ class MCPServerSource(ContextSource):
         allowed:
           - mcp__whorl__text_search_text_search_post
           - mcp__whorl__agent_search_agent_search_post
-      system_prompt_hint: |
+      prompt_hint: |
         Search Whorl FIRST to understand preferences before recommending.
     ```
     """
@@ -263,9 +263,10 @@ class MCPServerSource(ContextSource):
         return self.config.get("tools", {}).get("allowed", [])
 
     def get_system_prompt_hint(self) -> str:
-        """Return system prompt hint for using MCP tools.
+        """Return prompt hint for using MCP tools.
 
         Returns:
             Hint text to add to system prompt
         """
-        return self.config.get("system_prompt_hint", "")
+        # Support both old 'system_prompt_hint' and new 'prompt_hint' for backwards compat
+        return self.config.get("prompt_hint", self.config.get("system_prompt_hint", ""))

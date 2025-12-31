@@ -140,8 +140,8 @@ class TestHistoryCommand:
             assert "example2.com" in result.stdout
 
 
-class TestConfigCommand:
-    """Tests for the config command."""
+class TestSettingsCommand:
+    """Tests for the settings command."""
 
     @pytest.fixture
     def temp_storage(self):
@@ -151,47 +151,108 @@ class TestConfigCommand:
             storage.ensure_dirs()
             yield storage, Path(tmpdir)
 
-    def test_config_show(self, temp_storage):
-        """Test showing config."""
+    def test_settings_show(self, temp_storage):
+        """Test showing settings."""
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["config"])
+            result = runner.invoke(app, ["settings"])
             assert result.exit_code == 0
-            assert "taste_path" in result.stdout
-            assert "history_enabled" in result.stdout
-            assert "Description" in result.stdout  # New column
+            assert "model" in result.stdout
+            assert "total_count" in result.stdout
+            assert "Approaches" in result.stdout
 
-    def test_config_set(self, temp_storage):
-        """Test setting a config value."""
+    def test_settings_show_displays_all_sections(self, temp_storage):
+        """Test that settings shows all configuration sections."""
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["config", "--set", "default_model=haiku"])
+            result = runner.invoke(app, ["settings"])
             assert result.exit_code == 0
-            assert "haiku" in result.stdout
+            # Top-level settings
+            assert "model" in result.stdout
+            assert "total_count" in result.stdout
+            assert "feedback_server_port" in result.stdout
+            # Sections
+            assert "Approaches" in result.stdout
+            assert "Media Types" in result.stdout
+            assert "Context Sources" in result.stdout
+            # Default values
+            assert "convergent" in result.stdout
+            assert "divergent" in result.stdout
 
-            # Verify it was saved
-            config = storage.load_config()
-            assert config.default_model == "haiku"
-
-    def test_config_reset(self, temp_storage):
-        """Test resetting config."""
+    def test_settings_reset(self, temp_storage):
+        """Test resetting settings (with confirmation bypass)."""
         storage, tmpdir = temp_storage
-        # First set a non-default value
-        config = storage.load_config()
-        config.default_model = "haiku"
-        storage.save_config(config)
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            # Create initial settings file
+            from serendipity.config.types import TypesConfig
+            TypesConfig.write_defaults(storage.settings_path)
+
+            # Use input to bypass confirmation
+            result = runner.invoke(app, ["settings", "--reset"], input="y\n")
+            assert result.exit_code == 0
+            assert "reset" in result.stdout.lower() or "Reset" in result.stdout
+
+    def test_settings_reset_cancelled(self, temp_storage):
+        """Test cancelling settings reset."""
+        storage, tmpdir = temp_storage
+        from serendipity.config.types import TypesConfig
+        TypesConfig.write_defaults(storage.settings_path)
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["config", "--reset"])
+            result = runner.invoke(app, ["settings", "--reset"], input="n\n")
             assert result.exit_code == 0
-            assert "reset" in result.stdout.lower()
+            assert "Cancelled" in result.stdout
 
-            # Verify it was reset
-            config = storage.load_config()
-            assert config.default_model == "opus"  # Default value
+    def test_settings_enable_source(self, temp_storage):
+        """Test enabling a context source."""
+        storage, tmpdir = temp_storage
+        from serendipity.config.types import TypesConfig
+        TypesConfig.write_defaults(storage.settings_path)
+
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["settings", "--enable-source", "whorl"])
+            assert result.exit_code == 0
+            assert "Enabled" in result.stdout
+            assert "whorl" in result.stdout
+
+    def test_settings_disable_source(self, temp_storage):
+        """Test disabling a context source."""
+        storage, tmpdir = temp_storage
+        from serendipity.config.types import TypesConfig
+        TypesConfig.write_defaults(storage.settings_path)
+
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["settings", "--disable-source", "history"])
+            assert result.exit_code == 0
+            assert "Disabled" in result.stdout
+            assert "history" in result.stdout
+
+    def test_settings_enable_unknown_source(self, temp_storage):
+        """Test enabling an unknown source shows error."""
+        storage, tmpdir = temp_storage
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["settings", "--enable-source", "nonexistent"])
+            assert result.exit_code == 1
+            assert "Unknown source" in result.stdout
+
+    def test_settings_preview(self, temp_storage):
+        """Test preview shows generated prompt sections."""
+        storage, tmpdir = temp_storage
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["settings", "--preview"])
+            assert result.exit_code == 0
+            assert "APPROACH TYPES" in result.stdout
+            assert "MEDIA TYPES" in result.stdout
+            assert "DISTRIBUTION" in result.stdout
+            assert "OUTPUT FORMAT" in result.stdout
 
 
 class TestTasteCommand:
@@ -199,14 +260,10 @@ class TestTasteCommand:
 
     @pytest.fixture
     def temp_storage(self):
-        """Create a temporary storage directory with isolated config."""
+        """Create a temporary storage directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = StorageManager(base_dir=Path(tmpdir))
             storage.ensure_dirs()
-            # Configure taste_path to be within temp_dir
-            config = storage.load_config()
-            config.taste_path = str(Path(tmpdir) / "taste.md")
-            storage.save_config(config)
             yield storage, Path(tmpdir)
 
     def test_taste_show_empty(self, temp_storage):
@@ -224,8 +281,7 @@ class TestTasteCommand:
         """Test showing taste when it exists."""
         storage, tmpdir = temp_storage
         # Write taste directly to file at the configured path
-        taste_path = storage.get_taste_path()
-        taste_path.write_text("# My Taste\n\nI like minimalism.")
+        storage.taste_path.write_text("# My Taste\n\nI like minimalism.")
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
@@ -239,14 +295,10 @@ class TestMainCommand:
 
     @pytest.fixture
     def temp_storage(self):
-        """Create a temporary storage directory with isolated config."""
+        """Create a temporary storage directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = StorageManager(base_dir=Path(tmpdir))
             storage.ensure_dirs()
-            # Configure taste_path to be within temp_dir
-            config = storage.load_config()
-            config.taste_path = str(Path(tmpdir) / "taste.md")
-            storage.save_config(config)
             yield storage, Path(tmpdir)
 
     def test_no_args_without_profile_shows_onboarding(self, temp_storage):
@@ -264,7 +316,7 @@ class TestMainCommand:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "discover" in result.stdout
-        assert "config" in result.stdout
+        assert "settings" in result.stdout
         assert "profile" in result.stdout  # Now uses profile subcommand group
 
 
@@ -273,14 +325,10 @@ class TestSurpriseMeMode:
 
     @pytest.fixture
     def temp_storage(self):
-        """Create a temporary storage directory with isolated config."""
+        """Create a temporary storage directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = StorageManager(base_dir=Path(tmpdir))
             storage.ensure_dirs()
-            # Configure taste_path to be within temp_dir
-            config = storage.load_config()
-            config.taste_path = str(Path(tmpdir) / "taste.md")
-            storage.save_config(config)
             yield storage, Path(tmpdir)
 
     def test_no_input_without_profile_shows_onboarding(self, temp_storage):
@@ -295,3 +343,5 @@ class TestSurpriseMeMode:
 
     # Note: Tests that require mocking the full agent flow are in test_agent.py
     # These tests cover the "surprise me" behavior at the CLI level
+
+

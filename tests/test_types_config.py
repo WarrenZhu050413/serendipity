@@ -53,39 +53,24 @@ class TestApproachType:
         approach = ApproachType(
             name="convergent",
             display_name="More Like This",
-            description="Direct matches",
             enabled=True,
-            weight=0.6,
             prompt_hint="Match their interests",
         )
         assert approach.name == "convergent"
         assert approach.display_name == "More Like This"
-        assert approach.weight == 0.6
+        assert approach.prompt_hint == "Match their interests"
 
     def test_from_dict(self):
         """Test creating from dictionary."""
         data = {
             "display_name": "Expand",
-            "description": "Surprising content",
             "enabled": True,
-            "weight": 0.4,
             "prompt_hint": "Be creative",
         }
         approach = ApproachType.from_dict("divergent", data)
         assert approach.name == "divergent"
         assert approach.display_name == "Expand"
-        assert approach.weight == 0.4
         assert approach.prompt_hint == "Be creative"
-
-    def test_from_dict_with_count(self):
-        """Test from_dict with count instead of weight."""
-        data = {
-            "display_name": "Deep Dive",
-            "description": "In-depth content",
-            "count": 3,
-        }
-        approach = ApproachType.from_dict("deep_dive", data)
-        assert approach.count == 3
 
     def test_from_dict_defaults(self):
         """Test from_dict with minimal data uses defaults."""
@@ -94,7 +79,6 @@ class TestApproachType:
         assert approach.name == "test"
         assert approach.display_name == "Test"  # capitalized name
         assert approach.enabled is True
-        assert approach.weight == 0.5
 
 
 class TestMediaType:
@@ -105,13 +89,12 @@ class TestMediaType:
         media = MediaType(
             name="youtube",
             display_name="YouTube Videos",
-            description="Video content",
-            weight=0.25,
+            preference="I love video essays",
             sources=[Source(tool="WebSearch", hints="site:youtube.com")],
             metadata_schema=[MetadataField(name="channel", required=True)],
         )
         assert media.name == "youtube"
-        assert media.weight == 0.25
+        assert media.preference == "I love video essays"
         assert len(media.sources) == 1
         assert media.sources[0].tool == "WebSearch"
         assert len(media.metadata_schema) == 1
@@ -120,8 +103,7 @@ class TestMediaType:
         """Test creating from dictionary."""
         data = {
             "display_name": "Books",
-            "description": "Books to read",
-            "weight": 0.2,
+            "preference": "Want more of these",
             "sources": [
                 {"tool": "WebSearch", "hints": "site:goodreads.com"},
             ],
@@ -134,7 +116,7 @@ class TestMediaType:
         media = MediaType.from_dict("book", data)
         assert media.name == "book"
         assert media.display_name == "Books"
-        assert media.weight == 0.2
+        assert media.preference == "Want more of these"
         assert len(media.sources) == 1
         assert media.sources[0].hints == "site:goodreads.com"
         assert len(media.metadata_schema) == 2
@@ -148,7 +130,7 @@ class TestMediaType:
         assert media.name == "article"
         assert media.display_name == "Article"
         assert media.enabled is True
-        assert media.weight == 0.2
+        assert media.preference == ""
         assert media.sources == []
         assert media.metadata_schema == []
 
@@ -159,14 +141,15 @@ class TestTypesConfig:
     def test_default(self):
         """Test default configuration."""
         config = TypesConfig.default()
-        assert config.version == 2  # Current version from defaults/types.yaml
+        assert config.version == 2  # Current version from defaults/settings.yaml
+        assert config.model == "opus"
+        assert config.feedback_server_port == 9876
         assert "convergent" in config.approaches
         assert "divergent" in config.approaches
         assert "article" in config.media
         assert "youtube" in config.media
         assert "book" in config.media
         assert config.total_count == 10
-        assert config.agent_mode == "autonomous"
         # Also check context sources are loaded from defaults
         assert "taste" in config.context_sources
         assert "whorl" in config.context_sources
@@ -175,28 +158,28 @@ class TestTypesConfig:
         """Test creating from dictionary."""
         data = {
             "version": 2,
+            "model": "sonnet",
             "approaches": {
                 "convergent": {
                     "display_name": "Similar",
-                    "weight": 0.7,
                 },
             },
             "media": {
                 "podcast": {
                     "display_name": "Podcasts",
-                    "weight": 1.0,
+                    "preference": "I love podcasts",
                 },
             },
             "total_count": 5,
-            "agent_mode": "strict",
         }
         config = TypesConfig.from_dict(data)
         assert config.version == 2
+        assert config.model == "sonnet"
         assert len(config.approaches) == 1
-        assert config.approaches["convergent"].weight == 0.7
+        assert config.approaches["convergent"].display_name == "Similar"
         assert len(config.media) == 1
+        assert config.media["podcast"].preference == "I love podcasts"
         assert config.total_count == 5
-        assert config.agent_mode == "strict"
 
     def test_get_enabled_approaches(self):
         """Test filtering enabled approaches."""
@@ -220,53 +203,17 @@ class TestTypesConfig:
         assert len(enabled) == 4  # article, youtube, book, podcast
         assert all(m.enabled for m in enabled)
 
-    def test_calculate_distribution(self):
-        """Test distribution matrix calculation."""
-        config = TypesConfig.default()
-        matrix = config.calculate_distribution()
-
-        # Should have both approaches
-        assert "convergent" in matrix
-        assert "divergent" in matrix
-
-        # Each approach should have all media types
-        assert "article" in matrix["convergent"]
-        assert "youtube" in matrix["convergent"]
-        assert "book" in matrix["convergent"]
-
-        # Check total sums approximately to total_count
-        total = sum(
-            count
-            for approach_counts in matrix.values()
-            for count in approach_counts.values()
-        )
-        assert 9 <= total <= 11  # Allow for rounding
-
-    def test_calculate_distribution_with_overrides(self):
-        """Test distribution with weight overrides."""
-        config = TypesConfig.default()
-        config.overrides = {
-            "convergent": {
-                "youtube": {"weight": 0.5},  # Override to high weight
-            }
-        }
-        matrix = config.calculate_distribution()
-
-        # YouTube should have higher count for convergent
-        assert matrix["convergent"]["youtube"] == 5.0  # 0.5 * 10
-
     def test_from_yaml(self):
         """Test loading from YAML file."""
         yaml_content = """
-version: 1
+version: 2
+model: haiku
 approaches:
   test_approach:
     display_name: "Test"
-    weight: 1.0
 media:
   test_media:
     display_name: "Test Media"
-    weight: 1.0
 total_count: 5
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -279,12 +226,13 @@ total_count: 5
             assert "test_approach" in config.approaches
             assert "test_media" in config.media
             assert config.total_count == 5
+            assert config.model == "haiku"
         finally:
             path.unlink()
 
     def test_from_yaml_nonexistent_creates_default(self, tmp_path):
         """Test that missing YAML file creates default config."""
-        yaml_path = tmp_path / "types.yaml"
+        yaml_path = tmp_path / "settings.yaml"
         assert not yaml_path.exists()
 
         config = TypesConfig.from_yaml(yaml_path)
@@ -300,27 +248,21 @@ total_count: 5
 class TestTypesConfigIntegration:
     """Integration tests for TypesConfig."""
 
-    def test_default_weights_sum_to_one(self):
-        """Test that default approach weights sum to 1."""
+    def test_all_approaches_enabled_by_default(self):
+        """Test that all default approaches are enabled."""
         config = TypesConfig.default()
-        total_weight = sum(a.weight for a in config.get_enabled_approaches())
-        assert total_weight == 1.0
+        assert all(a.enabled for a in config.approaches.values())
 
-    def test_default_media_weights_sum_to_one(self):
-        """Test that default media weights sum to 1."""
+    def test_all_media_enabled_by_default(self):
+        """Test that all default media types are enabled."""
         config = TypesConfig.default()
-        total_weight = sum(m.weight for m in config.get_enabled_media())
-        assert total_weight == 1.0
+        assert all(m.enabled for m in config.media.values())
 
-    def test_distribution_covers_all_combinations(self):
-        """Test that distribution includes all approach × media combinations."""
+    def test_context_sources_have_correct_types(self):
+        """Test that context sources have the correct types."""
         config = TypesConfig.default()
-        matrix = config.calculate_distribution()
-
-        approaches = [a.name for a in config.get_enabled_approaches()]
-        media_types = [m.name for m in config.get_enabled_media()]
-
-        for approach in approaches:
-            assert approach in matrix
-            for media in media_types:
-                assert media in matrix[approach]
+        # Loader sources
+        assert config.context_sources["taste"].type == "loader"
+        assert config.context_sources["learnings"].type == "loader"
+        # MCP sources
+        assert config.context_sources["whorl"].type == "mcp"

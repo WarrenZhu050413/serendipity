@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from serendipity.storage import Config, HistoryEntry, StorageManager
+from serendipity.storage import HistoryEntry, StorageManager
 
 
 class TestHistoryEntry:
@@ -159,21 +159,12 @@ class TestStorageManager:
 
     def test_load_taste_empty(self, storage, temp_dir):
         """Test loading taste when file doesn't exist."""
-        # Configure taste_path to be within temp_dir
-        config = storage.load_config()
-        config.taste_path = str(temp_dir / "taste.md")
-        storage.save_config(config)
         taste = storage.load_taste()
         assert taste == ""
 
-    def test_get_taste_path(self, storage, temp_dir):
-        """Test get_taste_path uses config."""
-        # Configure taste_path to be within temp_dir
-        config = storage.load_config()
-        config.taste_path = str(temp_dir / "taste.md")
-        storage.save_config(config)
-        path = storage.get_taste_path()
-        assert path.name == "taste.md"
+    def test_taste_path(self, storage, temp_dir):
+        """Test taste_path property."""
+        assert storage.taste_path == temp_dir / "taste.md"
 
     def test_mark_extracted(self, storage):
         """Test marking entries as extracted."""
@@ -337,46 +328,6 @@ class TestStorageManager:
         assert "extracted item" not in context or "not yet in learnings" not in context.split("extracted.com")[0]
 
 
-class TestConfig:
-    """Tests for Config dataclass."""
-
-    def test_default_values(self):
-        """Test default config values."""
-        config = Config()
-        assert config.taste_path == "~/.serendipity/taste.md"
-        assert config.history_enabled is True
-        assert config.default_model == "opus"
-
-    def test_to_dict(self):
-        """Test config serialization."""
-        config = Config()
-        d = config.to_dict()
-        assert "taste_path" in d
-        assert "history_enabled" in d
-
-    def test_from_dict(self):
-        """Test config deserialization."""
-        d = {
-            "taste_path": "/custom/path.md",
-            "history_enabled": False,
-            "default_model": "haiku",
-        }
-        config = Config.from_dict(d)
-        assert config.taste_path == "/custom/path.md"
-        assert config.history_enabled is False
-        assert config.default_model == "haiku"
-
-    def test_from_dict_migrates_old_preferences_path(self):
-        """Test that from_dict handles old preferences_path key."""
-        d = {
-            "preferences_path": "/old/preferences.md",
-            "history_enabled": True,
-        }
-        config = Config.from_dict(d)
-        # Should migrate old key to new
-        assert config.taste_path == "/old/preferences.md"
-
-
 class TestMigration:
     """Tests for file migration logic."""
 
@@ -417,22 +368,34 @@ class TestMigration:
         assert not old_file.exists()
         assert (temp_dir / "learnings.md").exists()
 
-    def test_migrate_config_preferences_path(self, temp_dir):
-        """Test migrating preferences_path in config.json."""
+    def test_migrate_types_to_settings(self, temp_dir):
+        """Test migrating types.yaml to settings.yaml."""
         storage = StorageManager(base_dir=temp_dir)
         storage.ensure_dirs()
 
-        # Write old config with preferences_path
-        config_file = temp_dir / "config.json"
-        config_file.write_text(json.dumps({"preferences_path": "~/.serendipity/preferences.md"}))
+        # Create old types.yaml file
+        old_file = temp_dir / "types.yaml"
+        old_file.write_text("version: 2\napproaches: {}")
 
         migrations = storage.migrate_if_needed()
 
-        assert any("preferences_path → taste_path" in m for m in migrations)
-        # Verify config was updated
-        new_config = json.loads(config_file.read_text())
-        assert "taste_path" in new_config
-        assert "preferences_path" not in new_config
+        assert any("types.yaml → settings.yaml" in m for m in migrations)
+        assert not old_file.exists()
+        assert (temp_dir / "settings.yaml").exists()
+
+    def test_remove_old_config_json(self, temp_dir):
+        """Test that old config.json is removed."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+
+        # Create old config.json
+        old_file = temp_dir / "config.json"
+        old_file.write_text('{"default_model": "opus"}')
+
+        migrations = storage.migrate_if_needed()
+
+        assert any("config.json" in m for m in migrations)
+        assert not old_file.exists()
 
     def test_no_migration_when_new_files_exist(self, temp_dir):
         """Test that migration doesn't overwrite existing new files."""

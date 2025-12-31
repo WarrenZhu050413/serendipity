@@ -14,11 +14,11 @@ Never include a URL you haven't verified in this session. URLs from your trainin
 
 1. **Understand their taste deeply.** Read any URLs they've included. Study their preferences, history, and aesthetic sensibilities.
 
-2. **Find {n1} convergent recommendations:** Content that matches their taste directly. More of what they already like.
+2. **Find recommendations** using the approaches and media types specified below.
 
-3. **Find {n2} divergent recommendations:** Content that shares underlying qualities but expands their palette. Surprising but resonant.
+3. **Create custom CSS** that reflects their aesthetic sensibility. Study the base template and create styling that transforms it.
 
-4. **Create custom CSS** that reflects their aesthetic sensibility. Study the base template and create styling that transforms it.
+{type_guidance}
 
 ## History Context
 
@@ -43,7 +43,7 @@ This is the HTML template that your CSS will style. Study its structure:
 
 {user_context}
 
-## Output Format
+## Output
 
 Output your verification log, recommendations, and CSS in separate sections:
 
@@ -54,10 +54,7 @@ Search: "query you searched"
 </verification_log>
 
 <recommendations>
-{{
-  "convergent": [{{"url": "https://example.com", "reason": "Brief reason (1-2 sentences)"}}],
-  "divergent": [{{"url": "https://example.com", "reason": "Brief reason (1-2 sentences)"}}]
-}}
+(JSON as specified in OUTPUT FORMAT above)
 </recommendations>
 
 <css>

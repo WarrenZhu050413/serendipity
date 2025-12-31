@@ -1,60 +1,15 @@
-"""Storage manager for serendipity configuration, history, and preferences."""
+"""Storage manager for serendipity history and preferences.
+
+Configuration is now in settings.yaml (via TypesConfig).
+This module handles history.jsonl, learnings.md, and output files.
+"""
 
 import json
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
-
-
-@dataclass
-class Config:
-    """Serendipity configuration."""
-
-    taste_path: str = "~/.serendipity/taste.md"
-    template_path: str = "~/.serendipity/template.html"
-    history_enabled: bool = True
-    max_recent_history: int = 20
-    feedback_server_port: int = 9876
-    default_model: str = "opus"
-    default_n1: int = 5
-    default_n2: int = 5
-    html_style: Optional[str] = None
-    max_thinking_tokens: Optional[int] = None
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary."""
-        return {
-            "taste_path": self.taste_path,
-            "template_path": self.template_path,
-            "history_enabled": self.history_enabled,
-            "max_recent_history": self.max_recent_history,
-            "feedback_server_port": self.feedback_server_port,
-            "default_model": self.default_model,
-            "default_n1": self.default_n1,
-            "default_n2": self.default_n2,
-            "html_style": self.html_style,
-            "max_thinking_tokens": self.max_thinking_tokens,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "Config":
-        """Create from dictionary."""
-        # Handle migration from old config key
-        taste_path = data.get("taste_path") or data.get("preferences_path", "~/.serendipity/taste.md")
-        return cls(
-            taste_path=taste_path,
-            template_path=data.get("template_path", "~/.serendipity/template.html"),
-            history_enabled=data.get("history_enabled", True),
-            max_recent_history=data.get("max_recent_history", 20),
-            feedback_server_port=data.get("feedback_server_port", 9876),
-            default_model=data.get("default_model", "opus"),
-            default_n1=data.get("default_n1", 5),
-            default_n2=data.get("default_n2", 5),
-            html_style=data.get("html_style"),
-            max_thinking_tokens=data.get("max_thinking_tokens"),
-        )
+from typing import Optional
 
 
 @dataclass
@@ -120,7 +75,10 @@ class HistoryEntry:
 
 
 class StorageManager:
-    """Manages serendipity storage: config, history, and preferences."""
+    """Manages serendipity storage: history, learnings, and output files.
+
+    Note: Configuration is now handled by TypesConfig in settings.yaml.
+    """
 
     def __init__(self, base_dir: Optional[Path] = None):
         """Initialize storage manager.
@@ -129,11 +87,10 @@ class StorageManager:
             base_dir: Base directory for storage. Defaults to ~/.serendipity
         """
         self.base_dir = base_dir or Path.home() / ".serendipity"
-        self._config: Optional[Config] = None
 
     @property
-    def config_path(self) -> Path:
-        return self.base_dir / "config.json"
+    def settings_path(self) -> Path:
+        return self.base_dir / "settings.yaml"
 
     @property
     def history_path(self) -> Path:
@@ -144,13 +101,16 @@ class StorageManager:
         return self.base_dir / "learnings.md"
 
     @property
+    def taste_path(self) -> Path:
+        return self.base_dir / "taste.md"
+
+    @property
+    def template_path(self) -> Path:
+        return self.base_dir / "template.html"
+
+    @property
     def output_dir(self) -> Path:
         return self.base_dir / "output"
-
-    def get_taste_path(self) -> Path:
-        """Get taste profile path, expanding ~ if needed."""
-        config = self.load_config()
-        return Path(config.taste_path).expanduser()
 
     def get_template_path(self, default_content: str) -> Path:
         """Get template path, writing default content on first use.
@@ -161,15 +121,11 @@ class StorageManager:
         Returns:
             Path to the user's template file
         """
-        config = self.load_config()
-        user_path = Path(config.template_path).expanduser()
+        if not self.template_path.exists():
+            self.template_path.parent.mkdir(parents=True, exist_ok=True)
+            self.template_path.write_text(default_content)
 
-        # Write default content to user location on first use
-        if not user_path.exists():
-            user_path.parent.mkdir(parents=True, exist_ok=True)
-            user_path.write_text(default_content)
-
-        return user_path
+        return self.template_path
 
     def ensure_dirs(self) -> None:
         """Ensure storage directories exist."""
@@ -186,71 +142,35 @@ class StorageManager:
 
         # Migrate preferences.md → taste.md
         old_prefs = self.base_dir / "preferences.md"
-        new_taste = self.base_dir / "taste.md"
-        if old_prefs.exists() and not new_taste.exists():
-            shutil.move(str(old_prefs), str(new_taste))
-            migrations.append(f"Migrated preferences.md → taste.md")
+        if old_prefs.exists() and not self.taste_path.exists():
+            shutil.move(str(old_prefs), str(self.taste_path))
+            migrations.append("Migrated preferences.md → taste.md")
 
         # Migrate rules.md → learnings.md
         old_rules = self.base_dir / "rules.md"
-        new_learnings = self.base_dir / "learnings.md"
-        if old_rules.exists() and not new_learnings.exists():
-            shutil.move(str(old_rules), str(new_learnings))
-            migrations.append(f"Migrated rules.md → learnings.md")
+        if old_rules.exists() and not self.learnings_path.exists():
+            shutil.move(str(old_rules), str(self.learnings_path))
+            migrations.append("Migrated rules.md → learnings.md")
 
-        # Update config if it has old preferences_path
-        if self.config_path.exists():
-            try:
-                data = json.loads(self.config_path.read_text())
-                if "preferences_path" in data and "taste_path" not in data:
-                    # Migrate the path, updating the filename
-                    old_path = data["preferences_path"]
-                    new_path = old_path.replace("preferences.md", "taste.md")
-                    data["taste_path"] = new_path
-                    del data["preferences_path"]
-                    self.config_path.write_text(json.dumps(data, indent=2))
-                    self._config = None  # Clear cached config
-                    migrations.append(f"Updated config: preferences_path → taste_path")
-            except (json.JSONDecodeError, IOError):
-                pass
+        # Migrate types.yaml → settings.yaml
+        old_types = self.base_dir / "types.yaml"
+        if old_types.exists() and not self.settings_path.exists():
+            shutil.move(str(old_types), str(self.settings_path))
+            migrations.append("Migrated types.yaml → settings.yaml")
+
+        # Remove old config.json (settings are now in settings.yaml)
+        old_config = self.base_dir / "config.json"
+        if old_config.exists():
+            old_config.unlink()
+            migrations.append("Removed config.json (settings now in settings.yaml)")
 
         return migrations
 
-    def load_config(self) -> Config:
-        """Load configuration from file."""
-        if self._config is not None:
-            return self._config
-
-        if not self.config_path.exists():
-            self._config = Config()
-            return self._config
-
-        try:
-            data = json.loads(self.config_path.read_text())
-            self._config = Config.from_dict(data)
-        except (json.JSONDecodeError, IOError):
-            self._config = Config()
-
-        return self._config
-
-    def save_config(self, config: Config) -> None:
-        """Save configuration to file."""
-        self.ensure_dirs()
-        self.config_path.write_text(json.dumps(config.to_dict(), indent=2))
-        self._config = config
-
-    def reset_config(self) -> Config:
-        """Reset configuration to defaults."""
-        config = Config()
-        self.save_config(config)
-        return config
-
     def load_taste(self) -> str:
         """Load user taste profile from file."""
-        path = self.get_taste_path()
-        if not path.exists():
+        if not self.taste_path.exists():
             return ""
-        return path.read_text()
+        return self.taste_path.read_text()
 
     # Learnings management (extracted patterns from feedback)
 
@@ -373,18 +293,15 @@ class StorageManager:
                         continue
         return entries
 
-    def load_recent_history(self, limit: Optional[int] = None) -> list[HistoryEntry]:
+    def load_recent_history(self, limit: int = 20) -> list[HistoryEntry]:
         """Load recent history entries.
 
         Args:
-            limit: Maximum number of entries to return. If None, uses config default.
+            limit: Maximum number of entries to return. Defaults to 20.
 
         Returns:
             List of recent history entries, newest first.
         """
-        if limit is None:
-            limit = self.load_config().max_recent_history
-
         entries = self.load_all_history()
         # Return most recent entries
         return entries[-limit:] if entries else []
@@ -436,21 +353,17 @@ class StorageManager:
         """Count words in text."""
         return len(text.split())
 
-    def build_history_context(self, warn_callback=None) -> str:
+    def build_history_context(self, max_recent: int = 20, warn_callback=None) -> str:
         """Build the history context string for the prompt.
 
         Args:
+            max_recent: Maximum number of recent entries to include.
             warn_callback: Optional callback function to emit warnings.
                            Called with (message: str) when context is too long.
 
         Returns:
             String with history context (learnings, recent items, unextracted likes/dislikes).
         """
-        config = self.load_config()
-
-        if not config.history_enabled:
-            return ""
-
         history_parts = []
 
         # 1. Discovery learnings (compact, high signal - extracted patterns)
@@ -459,7 +372,7 @@ class StorageManager:
             history_parts.append(f"<discovery_learnings>\n{learnings}\n</discovery_learnings>")
 
         # 2. Recent entries (to avoid repeating) - include all, extracted or not
-        recent = self.load_recent_history()
+        recent = self.load_recent_history(limit=max_recent)
         if recent:
             recent_lines = []
             for e in recent:
@@ -500,15 +413,3 @@ class StorageManager:
             )
 
         return result
-
-    def build_style_guidance(self) -> str:
-        """Build style guidance for the prompt.
-
-        Returns:
-            String with style guidance.
-        """
-        config = self.load_config()
-        if config.html_style:
-            return f'<style_guidance>\nStyle the HTML output as: {config.html_style}\n</style_guidance>'
-        else:
-            return '<style_guidance>\nGenerate HTML styling that reflects the user\'s aesthetic taste based on their preferences and the nature of the recommendations.\n</style_guidance>'

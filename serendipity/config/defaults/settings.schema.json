@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/serendipity/types.schema.json",
-  "title": "Serendipity Types Configuration",
-  "description": "Configuration for recommendation types (approaches × media) and context sources",
+  "$id": "https://github.com/serendipity/settings.schema.json",
+  "title": "Serendipity Settings",
+  "description": "Single source of truth for all serendipity configuration",
   "type": "object",
   "properties": {
     "version": {
@@ -10,16 +10,21 @@
       "description": "Configuration schema version",
       "default": 2
     },
+    "model": {
+      "type": "string",
+      "enum": ["opus", "sonnet", "haiku"],
+      "description": "Default Claude model to use",
+      "default": "opus"
+    },
     "total_count": {
       "type": "integer",
       "description": "Total number of recommendations per discovery",
       "default": 10
     },
-    "agent_mode": {
-      "type": "string",
-      "enum": ["autonomous", "strict"],
-      "description": "How strictly the agent follows the distribution",
-      "default": "autonomous"
+    "feedback_server_port": {
+      "type": "integer",
+      "description": "Port for the HTML feedback server",
+      "default": 9876
     },
     "approaches": {
       "type": "object",
@@ -41,10 +46,6 @@
       "additionalProperties": {
         "$ref": "#/definitions/ContextSource"
       }
-    },
-    "overrides": {
-      "type": "object",
-      "description": "Override weights for specific approach×media combinations"
     }
   },
   "definitions": {
@@ -55,31 +56,16 @@
           "type": "string",
           "description": "Human-readable name"
         },
-        "description": {
-          "type": "string",
-          "description": "What this approach means"
-        },
         "enabled": {
           "type": "boolean",
           "default": true
-        },
-        "weight": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1,
-          "description": "Relative weight (0-1)",
-          "default": 0.5
-        },
-        "count": {
-          "type": "integer",
-          "description": "Hard limit (overrides weight)"
         },
         "prompt_hint": {
           "type": "string",
           "description": "Instructions for Claude about this approach"
         }
       },
-      "required": ["display_name", "description"]
+      "required": ["display_name"]
     },
     "MediaType": {
       "type": "object",
@@ -87,21 +73,9 @@
         "display_name": {
           "type": "string"
         },
-        "description": {
-          "type": "string"
-        },
         "enabled": {
           "type": "boolean",
           "default": true
-        },
-        "weight": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1,
-          "default": 0.2
-        },
-        "count": {
-          "type": "integer"
         },
         "sources": {
           "type": "array",
@@ -112,6 +86,10 @@
         "prompt_hint": {
           "type": "string"
         },
+        "preference": {
+          "type": "string",
+          "description": "Optional natural language hint about user's preference for this media type"
+        },
         "metadata_schema": {
           "type": "array",
           "items": {
@@ -119,7 +97,7 @@
           }
         }
       },
-      "required": ["display_name", "description"]
+      "required": ["display_name"]
     },
     "Source": {
       "type": "object",
@@ -258,7 +236,7 @@
             }
           }
         },
-        "system_prompt_hint": {
+        "prompt_hint": {
           "type": "string",
           "description": "Instructions for Claude about using this MCP server"
         }

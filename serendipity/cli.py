@@ -23,20 +23,7 @@ from serendipity.context_sources import ContextSourceManager
 from serendipity.prompts.builder import PromptBuilder
 from serendipity.resources import get_base_template
 
-# Config setting descriptions
-CONFIG_DESCRIPTIONS = {
-    "taste_path": "Path to your taste profile (markdown file with your aesthetic preferences)",
-    "template_path": "Path to HTML template (copied from package default on first use)",
-    "history_enabled": "Track recommendations to avoid repeats and learn from feedback",
-    "max_recent_history": "Number of recent items to include in context (avoids repeating)",
-    "feedback_server_port": "Port for the HTML feedback server (localhost)",
-    "default_model": "Claude model to use (haiku=fast, sonnet=balanced, opus=best)",
-    "default_n1": "Default number of convergent recommendations (more of what you like)",
-    "default_n2": "Default number of divergent recommendations (expand your taste)",
-    "html_style": "HTML styling preference (null=auto-generate based on taste)",
-    "max_thinking_tokens": "Max tokens for extended thinking (null=disabled, 10000=default when enabled)",
-}
-from serendipity.storage import Config, HistoryEntry, StorageManager
+from serendipity.storage import HistoryEntry, StorageManager
 
 app = typer.Typer(
     name="serendipity",
@@ -68,15 +55,11 @@ def callback(ctx: typer.Context) -> None:
         # Call discover_cmd directly with default values
         discover_cmd(
             file_path=None,
-            n1=None,
-            n2=None,
             paste=False,
             interactive=False,
             model=None,
             output_format="html",
             verbose=False,
-            no_history=False,
-            no_taste=False,
             enable_source=None,
             disable_source=None,
             thinking=None,
@@ -86,104 +69,115 @@ def callback(ctx: typer.Context) -> None:
 @profile_app.callback()
 def profile_callback(
     ctx: typer.Context,
-    verbose: bool = typer.Option(
+    show: bool = typer.Option(
         False,
-        "--verbose",
-        "-v",
-        help="Show word counts per section",
+        "--show",
+        "-s",
+        help="Show full content of all enabled sources",
+    ),
+    edit: bool = typer.Option(
+        False,
+        "--edit",
+        "-e",
+        help="Open taste.md in $EDITOR",
     ),
 ) -> None:
-    """Preview your profile - what Claude knows about you.
+    """View your profile - what Claude knows about you.
 
-    Shows taste, learnings, recent history, and pending feedback.
+    Shows all enabled context sources: taste, learnings, history, etc.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile             [dim]# Overview of all sources[/dim]
+      [dim]$[/dim] serendipity profile --show      [dim]# Full content of each source[/dim]
+      [dim]$[/dim] serendipity profile --edit      [dim]# Edit taste.md[/dim]
     """
-    if ctx.invoked_subcommand is not None:
-        return
-
     storage = StorageManager()
     storage.ensure_dirs()
+
+    # Handle --edit flag
+    if edit:
+        taste_path = storage.taste_path
+        if not taste_path.exists():
+            taste_path.parent.mkdir(parents=True, exist_ok=True)
+            taste_path.write_text(
+                "# My Taste Profile\n\n"
+                "<!-- DELETE EVERYTHING AND REPLACE WITH YOUR TASTE -->\n\n"
+                "Describe your aesthetic preferences, interests, and what you enjoy.\n\n"
+                "Examples:\n"
+                "- I'm drawn to Japanese minimalism and wabi-sabi aesthetics\n"
+                "- I love long-form essays on philosophy and design\n"
+                "- I appreciate things that feel contemplative and unhurried\n"
+            )
+        editor = os.environ.get("EDITOR", "vim")
+        subprocess.run([editor, str(taste_path)])
+        console.print(success(f"Taste profile saved to {taste_path}"))
+        return
+
+    # If subcommand provided, let it handle
+    if ctx.invoked_subcommand is not None:
+        return
 
     # Run migration if needed
     migrations = storage.migrate_if_needed()
     for msg in migrations:
         console.print(f"[yellow]{msg}[/yellow]")
 
-    output_lines = []
+    # Load settings to get context sources
+    settings = TypesConfig.from_yaml(storage.settings_path)
 
-    # Taste section
-    taste = storage.load_taste()
-    if taste.strip():
-        # Check if it's still the default template
-        if "Describe your aesthetic preferences" in taste and "Examples:" in taste:
-            taste_display = "[dim]Default template (not customized)[/dim]"
-            taste_words = 0
+    console.print("\n[bold]Your Profile[/bold]")
+    console.print("[dim]What Claude knows about you (enabled context sources)[/dim]\n")
+
+    total_words = 0
+
+    for name, source_config in settings.context_sources.items():
+        status = "[green]●[/green]" if source_config.enabled else "[dim]○[/dim]"
+        source_type = f"[dim]{source_config.type}[/dim]"
+
+        if source_config.enabled:
+            # Show content for enabled sources
+            content = ""
+            words = 0
+
+            if source_config.type == "loader":
+                # Load content from loader
+                if name == "taste":
+                    content = storage.load_taste()
+                    if "Describe your aesthetic preferences" in content:
+                        content = ""  # Skip default template
+                elif name == "learnings":
+                    content = storage.load_learnings()
+                elif name == "history":
+                    recent = storage.load_recent_history(20)
+                    content = f"{len(recent)} recent items"
+                elif name == "style_guidance":
+                    content = "[custom HTML styling]"
+
+            if content:
+                words = storage.count_words(content) if name != "history" else 0
+                total_words += words
+
+            if show and content and name not in ["history", "style_guidance"]:
+                # Full content mode
+                console.print(f"{status} [bold]{name}[/bold] ({source_type}) - {words} words")
+                console.print(Panel(content, border_style="dim"))
+            else:
+                # Summary mode
+                if content:
+                    preview = content[:100].replace('\n', ' ')
+                    if len(content) > 100:
+                        preview += "..."
+                    console.print(f"{status} [bold]{name}[/bold] ({source_type})")
+                    console.print(f"   [dim]{preview}[/dim]")
+                else:
+                    console.print(f"{status} [bold]{name}[/bold] ({source_type}) [dim]- empty[/dim]")
         else:
-            taste_words = storage.count_words(taste)
-            taste_display = taste[:500] + "..." if len(taste) > 500 else taste
-    else:
-        taste_display = "[dim]Not set[/dim]"
-        taste_words = 0
+            console.print(f"{status} [dim]{name}[/dim] ({source_type}) - disabled")
 
-    header = "TASTE" + (f" ({taste_words} words)" if verbose and taste_words else "")
-    output_lines.append(f"[bold cyan]{header}[/bold cyan]")
-    output_lines.append(taste_display)
-    output_lines.append("")
-
-    # Learnings section
-    learnings_content = storage.load_learnings()
-    if learnings_content.strip():
-        learnings_words = storage.count_words(learnings_content)
-        learnings_display = learnings_content[:500] + "..." if len(learnings_content) > 500 else learnings_content
-    else:
-        learnings_display = "[dim]No learnings yet[/dim]"
-        learnings_words = 0
-
-    header = "LEARNINGS" + (f" ({learnings_words} words)" if verbose and learnings_words else "")
-    output_lines.append(f"[bold cyan]{header}[/bold cyan]")
-    output_lines.append(learnings_display)
-    output_lines.append("")
-
-    # Recent history section
-    recent = storage.load_recent_history(20)
-    header = "RECENT HISTORY" + (f" ({len(recent)} items)" if recent else "")
-    output_lines.append(f"[bold cyan]{header}[/bold cyan]")
-    if recent:
-        for entry in recent[-5:]:  # Show last 5
-            feedback = ""
-            if entry.feedback == "liked":
-                feedback = " [green](liked)[/green]"
-            elif entry.feedback == "disliked":
-                feedback = " [red](disliked)[/red]"
-            output_lines.append(f"  - {entry.url[:60]}{'...' if len(entry.url) > 60 else ''}{feedback}")
-        if len(recent) > 5:
-            output_lines.append(f"  [dim]... and {len(recent) - 5} more[/dim]")
-    else:
-        output_lines.append("[dim]No history[/dim]")
-    output_lines.append("")
-
-    # Unextracted feedback section
-    liked = storage.get_unextracted_entries(feedback="liked")
-    disliked = storage.get_unextracted_entries(feedback="disliked")
-    output_lines.append(f"[bold cyan]PENDING FEEDBACK[/bold cyan]")
-    output_lines.append(f"  Unextracted likes: {len(liked)}")
-    output_lines.append(f"  Unextracted dislikes: {len(disliked)}")
-
-    # Total word count
-    if verbose:
-        total_words = taste_words + learnings_words
-        output_lines.append("")
-        output_lines.append(f"[dim]Total context: ~{total_words} words (excluding history)[/dim]")
-
-    console.print(Panel(
-        "\n".join(output_lines),
-        title="Your Profile",
-        border_style="blue",
-    ))
-
-    console.print("\n[bold]Subcommands:[/bold]")
-    console.print("  serendipity profile taste      # Edit your taste profile")
-    console.print("  serendipity profile history    # View history")
-    console.print("  serendipity profile learnings  # Manage learnings")
+    console.print(f"\n[dim]Total context: ~{total_words} words[/dim]")
+    console.print(f"\n[dim]Edit taste: serendipity profile --edit[/dim]")
+    console.print(f"[dim]Full content: serendipity profile --show[/dim]")
+    console.print(f"[dim]Manage sources: serendipity settings[/dim]")
 
 
 # Rich formatting helpers
@@ -484,16 +478,6 @@ def discover_cmd(
         None,
         help="Path to context file (use '-' for stdin)",
     ),
-    n1: Optional[int] = typer.Option(
-        None,
-        "--n1",
-        help="Number of convergent recommendations (default from config)",
-    ),
-    n2: Optional[int] = typer.Option(
-        None,
-        "--n2",
-        help="Number of divergent recommendations (default from config)",
-    ),
     paste: bool = typer.Option(
         False,
         "--paste",
@@ -524,26 +508,17 @@ def discover_cmd(
         "-v",
         help="Show detailed progress",
     ),
-    no_history: bool = typer.Option(
-        False,
-        "--no-history",
-        help="Don't use or save history for this run",
-    ),
-    no_taste: bool = typer.Option(
-        False,
-        "--no-taste",
-        help="Don't include taste profile for this run",
-    ),
     enable_source: Optional[list[str]] = typer.Option(
         None,
         "--enable-source",
         "-s",
-        help="Enable a context source (can repeat: -s whorl -s custom). Available: taste, learnings, history, style_guidance, whorl",
+        help="Enable a context source for this run (can repeat: -s whorl -s custom)",
     ),
     disable_source: Optional[list[str]] = typer.Option(
         None,
         "--disable-source",
-        help="Disable a context source (can repeat)",
+        "-d",
+        help="Disable a context source for this run (can repeat)",
     ),
     thinking: Optional[int] = typer.Option(
         None,
@@ -560,29 +535,27 @@ def discover_cmd(
       [dim]$[/dim] serendipity notes.md                  [dim]# From file[/dim]
       [dim]$[/dim] serendipity -p                        [dim]# From clipboard[/dim]
       [dim]$[/dim] serendipity -i                        [dim]# Open editor[/dim]
-      [dim]$[/dim] serendipity --n1 3 --n2 8             [dim]# Custom counts[/dim]
       [dim]$[/dim] serendipity -o terminal               [dim]# No browser[/dim]
-      [dim]$[/dim] serendipity -s whorl                    [dim]# With Whorl knowledge base[/dim]
+      [dim]$[/dim] serendipity -s whorl                  [dim]# With Whorl knowledge base[/dim]
+      [dim]$[/dim] serendipity -d history                [dim]# Without history[/dim]
     """
-    # Load storage and config
+    # Load storage
     storage = StorageManager()
     storage.ensure_dirs()
-    config = storage.load_config()
 
     # Run migration if needed
     migrations = storage.migrate_if_needed()
     for msg in migrations:
         console.print(f"[yellow]{msg}[/yellow]")
 
-    # Use config defaults if not specified
+    # Load settings config
+    settings = TypesConfig.from_yaml(storage.settings_path)
+
+    # Use settings defaults if not specified
     if model is None:
-        model = config.default_model
-    if n1 is None:
-        n1 = config.default_n1
-    if n2 is None:
-        n2 = config.default_n2
-    # Use CLI thinking value, or fall back to config
-    max_thinking_tokens = thinking if thinking is not None else config.max_thinking_tokens
+        model = settings.model
+    # Use CLI thinking value (extended thinking is CLI-only now)
+    max_thinking_tokens = thinking
 
     # Get context from input sources
     context = _get_context(file_path, paste, interactive)
@@ -619,21 +592,12 @@ def discover_cmd(
         console.print("[dim]No input provided - running in 'surprise me' mode[/dim]")
         console.print()
 
-    # Load types config for context sources
-    types_config = TypesConfig.from_yaml(storage.base_dir / "types.yaml")
-
-    # Create context source manager
-    ctx_manager = ContextSourceManager(types_config, console)
+    # Create context source manager using settings
+    ctx_manager = ContextSourceManager(settings, console)
 
     # Build enable/disable lists from flags
     sources_to_enable = list(enable_source) if enable_source else []
     sources_to_disable = list(disable_source) if disable_source else []
-
-    # Handle backwards-compatible --no-taste and --no-history flags
-    if no_taste:
-        sources_to_disable.append("taste")
-    if no_history:
-        sources_to_disable.extend(["history", "learnings"])
 
     # Initialize sources and build context (async operations)
     async def init_and_build_context():
@@ -673,7 +637,7 @@ def discover_cmd(
         console.print(Panel(
             f"Context length: {len(context)} chars\n"
             f"Model: {model}\n"
-            f"Convergent: {n1}, Divergent: {n2}\n"
+            f"Total count: {settings.total_count}\n"
             f"Context sources: {', '.join(enabled_sources) if enabled_sources else 'none'}\n"
             f"MCP servers: {', '.join(ctx_manager.get_mcp_servers().keys()) or 'none'}\n"
             f"Thinking: {max_thinking_tokens if max_thinking_tokens else 'disabled'}",
@@ -690,24 +654,24 @@ def discover_cmd(
         model=model,
         verbose=verbose,
         context_manager=ctx_manager,
-        server_port=config.feedback_server_port,
+        server_port=settings.feedback_server_port,
         template_path=template_path,
         max_thinking_tokens=max_thinking_tokens,
+        types_config=settings,
     )
 
     console.print("[bold green]Discovering...[/bold green]")
     console.print()
     result = agent.run_sync(
         context,
-        n1=n1,
-        n2=n2,
         context_augmentation=context_augmentation,
         style_guidance=style_guidance,
     )
     console.print()
 
-    # Save to history
-    if config.history_enabled and not no_history:
+    # Save to history (unless history source is disabled)
+    history_enabled = "history" not in sources_to_disable
+    if history_enabled:
         _save_to_history(storage, result)
 
     # Output based on format
@@ -722,7 +686,7 @@ def discover_cmd(
         _, actual_port = _start_feedback_server(
             storage,
             agent,
-            config.feedback_server_port,
+            settings.feedback_server_port,
             static_dir=agent.output_dir,
             user_input=context,
             session_id=result.session_id,
@@ -736,8 +700,8 @@ def discover_cmd(
 
         console.print(success(f"Opened in browser: {url}"))
         console.print(f"[dim]HTML file: {result.html_path}[/dim]")
-        if actual_port != config.feedback_server_port:
-            console.print(f"[yellow]Port {config.feedback_server_port} was in use, using port {actual_port}[/yellow]")
+        if actual_port != settings.feedback_server_port:
+            console.print(f"[yellow]Port {settings.feedback_server_port} was in use, using port {actual_port}[/yellow]")
         console.print(f"[dim]Feedback server running on localhost:{actual_port}[/dim]")
         console.print("[dim]Press Ctrl+C to stop the server when done.[/dim]")
 
@@ -774,252 +738,81 @@ def discover_cmd(
 
 
 @app.command()
-def config(
-    interactive: bool = typer.Option(
-        False,
-        "--interactive",
-        "-i",
-        help="Interactive configuration wizard",
-    ),
-    show: bool = typer.Option(
-        False,
-        "--show",
-        help="Show current configuration",
-    ),
-    set_value: Optional[str] = typer.Option(
-        None,
-        "--set",
-        help="Set a config value (key=value)",
-    ),
-    reset: bool = typer.Option(
-        False,
-        "--reset",
-        help="Reset configuration to defaults",
-    ),
-) -> None:
-    """Manage serendipity configuration.
-
-    [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity config                  [dim]# Show config[/dim]
-      [dim]$[/dim] serendipity config -i               [dim]# Interactive wizard[/dim]
-      [dim]$[/dim] serendipity config --set model=haiku
-      [dim]$[/dim] serendipity config --reset
-    """
-    storage = StorageManager()
-    storage.ensure_dirs()
-
-    if reset:
-        cfg = storage.reset_config()
-        console.print(success("Configuration reset to defaults"))
-        return
-
-    if set_value:
-        # Parse key=value
-        if "=" not in set_value:
-            console.print(error("Invalid format. Use: --set key=value"))
-            raise typer.Exit(code=1)
-
-        key, value = set_value.split("=", 1)
-        cfg = storage.load_config()
-
-        # Type conversion based on key
-        if key in ("history_enabled",):
-            value = value.lower() in ("true", "1", "yes")
-        elif key in ("max_recent_history", "feedback_server_port", "default_n1", "default_n2"):
-            value = int(value)
-        elif key == "max_thinking_tokens":
-            value = int(value) if value.lower() not in ("null", "none", "") else None
-        elif key == "html_style" and value.lower() == "null":
-            value = None
-
-        if hasattr(cfg, key):
-            setattr(cfg, key, value)
-            storage.save_config(cfg)
-            console.print(success(f"Set {key} = {value}"))
-        else:
-            console.print(error(f"Unknown config key: {key}"))
-            raise typer.Exit(code=1)
-        return
-
-    if interactive:
-        cfg = storage.load_config()
-        console.print(Panel(
-            "Use ↑↓ to navigate, Enter to edit, 'Save & Exit' when done",
-            title="Interactive Configuration",
-            border_style="blue",
-        ))
-
-        while True:
-            # Build choices showing current values
-            choices = []
-            cfg_dict = cfg.to_dict()
-
-            for key, value in cfg_dict.items():
-                display_val = str(value) if value is not None else "[auto]"
-                if len(display_val) > 30:
-                    display_val = display_val[:27] + "..."
-                desc = CONFIG_DESCRIPTIONS.get(key, "")
-                # Format: "setting_name: value  (description)"
-                label = f"{key}: {display_val}"
-                choices.append(questionary.Choice(title=label, value=key))
-
-            choices.append(questionary.Choice(title="─" * 40, value=None, disabled=True))
-            choices.append(questionary.Choice(title="💾 Save & Exit", value="__save__"))
-            choices.append(questionary.Choice(title="❌ Cancel", value="__cancel__"))
-
-            selected = questionary.select(
-                "Select a setting to edit:",
-                choices=choices,
-                use_shortcuts=False,
-                use_arrow_keys=True,
-                instruction="(↑↓ navigate, Enter select)",
-            ).ask()
-
-            if selected is None or selected == "__cancel__":
-                console.print(warning("Configuration cancelled"))
-                return
-
-            if selected == "__save__":
-                storage.save_config(cfg)
-                console.print(success("Configuration saved"))
-                return
-
-            # Edit the selected setting
-            current_val = getattr(cfg, selected)
-            desc = CONFIG_DESCRIPTIONS.get(selected, "")
-            console.print(f"\n[dim]{desc}[/dim]")
-
-            if selected == "default_model":
-                new_val = questionary.select(
-                    f"Select model:",
-                    choices=["opus", "sonnet", "haiku"],
-                    default=current_val,
-                ).ask()
-            elif selected in ("history_enabled",):
-                new_val = questionary.confirm(
-                    f"{selected}?",
-                    default=current_val,
-                ).ask()
-            elif selected in ("max_recent_history", "feedback_server_port", "default_n1", "default_n2"):
-                new_val = questionary.text(
-                    f"Enter value:",
-                    default=str(current_val),
-                    validate=lambda x: x.isdigit() or "Must be a number",
-                ).ask()
-                if new_val:
-                    new_val = int(new_val)
-            elif selected == "html_style":
-                new_val = questionary.text(
-                    "Enter style (empty for auto):",
-                    default=current_val or "",
-                ).ask()
-                if new_val == "":
-                    new_val = None
-            elif selected == "max_thinking_tokens":
-                new_val = questionary.text(
-                    "Enter token budget (empty to disable):",
-                    default=str(current_val) if current_val else "",
-                    validate=lambda x: x == "" or x.isdigit() or "Must be a number or empty",
-                ).ask()
-                if new_val == "" or new_val is None:
-                    new_val = None
-                else:
-                    new_val = int(new_val)
-            else:
-                new_val = questionary.text(
-                    f"Enter value:",
-                    default=str(current_val) if current_val else "",
-                ).ask()
-
-            if new_val is not None:
-                setattr(cfg, selected, new_val)
-                console.print(success(f"Set {selected} = {new_val}"))
-            console.print()  # Blank line before next menu
-
-        return
-
-    # Default: show config
-    cfg = storage.load_config()
-    table = Table(title="Configuration", show_lines=True)
-    table.add_column("Setting", style="cyan")
-    table.add_column("Value", style="white")
-    table.add_column("Description", style="dim")
-
-    for key, value in cfg.to_dict().items():
-        desc = CONFIG_DESCRIPTIONS.get(key, "")
-        table.add_row(
-            key,
-            str(value) if value is not None else "[dim italic]auto[/dim italic]",
-            desc,
-        )
-
-    console.print(table)
-    console.print(f"\n[dim]Config file: {storage.config_path}[/dim]")
-
-
-@app.command()
-def types(
+def settings(
     show: bool = typer.Option(
         True,
         "--show",
         "-s",
-        help="Show available recommendation types",
+        help="Show current settings",
     ),
     edit: bool = typer.Option(
         False,
         "--edit",
         "-e",
-        help="Open types.yaml in $EDITOR",
+        help="Open settings.yaml in $EDITOR",
     ),
     preview: bool = typer.Option(
         False,
         "--preview",
         "-p",
-        help="Preview the prompt that would be generated from types config",
+        help="Preview the prompt that would be generated",
     ),
     reset: bool = typer.Option(
         False,
         "--reset",
         "-r",
-        help="Reset types.yaml to defaults (overwrites current config)",
+        help="Reset settings.yaml to defaults",
+    ),
+    enable_source: Optional[str] = typer.Option(
+        None,
+        "--enable-source",
+        help="Enable a context source by name",
+    ),
+    disable_source: Optional[str] = typer.Option(
+        None,
+        "--disable-source",
+        help="Disable a context source by name",
     ),
 ) -> None:
-    """Manage recommendation types (approaches × media).
+    """Manage all serendipity settings.
 
-    Configure how recommendations are found (approaches: convergent, divergent, etc.)
-    and what formats are recommended (media: youtube, book, article, etc.).
+    Single configuration file for approaches, media types, context sources,
+    and runtime settings (model, total_count, feedback_server_port).
 
     EXAMPLES:
-    $ serendipity types                # Show current configuration
-    $ serendipity types --edit         # Edit in $EDITOR
-    $ serendipity types --reset        # Restore defaults
+    $ serendipity settings                        # Show all settings
+    $ serendipity settings --edit                 # Edit in $EDITOR
+    $ serendipity settings --reset                # Restore defaults
+    $ serendipity settings --enable-source whorl  # Enable context source
     """
+    import yaml
+
     console = Console()
     storage = StorageManager()
-    types_path = storage.base_dir / "types.yaml"
+    settings_path = storage.settings_path
 
     if reset:
         # Confirm before overwriting
-        if types_path.exists():
-            console.print(f"[yellow]This will overwrite {types_path}[/yellow]")
-            if not questionary.confirm("Reset to defaults?", default=False).ask():
+        if settings_path.exists():
+            console.print(f"[yellow]This will overwrite {settings_path}[/yellow]")
+            if not typer.confirm("Reset to defaults?", default=False):
                 console.print("[dim]Cancelled.[/dim]")
                 return
-        TypesConfig.reset(types_path)
-        console.print(f"[green]Reset types.yaml to defaults.[/green]")
-        console.print(f"[dim]{types_path}[/dim]")
+        TypesConfig.reset(settings_path)
+        console.print(f"[green]Reset settings.yaml to defaults.[/green]")
+        console.print(f"[dim]{settings_path}[/dim]")
         return
 
     if edit:
         # Open in editor (auto-creates if missing via from_yaml)
         editor = os.environ.get("EDITOR", "vim")
-        TypesConfig.from_yaml(types_path)  # Ensure file exists
-        subprocess.run([editor, str(types_path)])
+        TypesConfig.from_yaml(settings_path)  # Ensure file exists
+        subprocess.run([editor, str(settings_path)])
         return
 
     if preview:
         # Show the prompt that would be generated
-        config = TypesConfig.from_yaml(types_path)
+        config = TypesConfig.from_yaml(settings_path)
         builder = PromptBuilder(config)
         console.print(Panel(
             builder.build_type_guidance(),
@@ -1028,27 +821,60 @@ def types(
         ))
         return
 
-    # Default: show types
-    config = TypesConfig.from_yaml(types_path)
+    # Handle enable/disable source
+    if enable_source or disable_source:
+        config = TypesConfig.from_yaml(settings_path)
+
+        if not settings_path.exists():
+            TypesConfig.write_defaults(settings_path)
+
+        yaml_content = settings_path.read_text()
+        data = yaml.safe_load(yaml_content) or {}
+
+        if "context_sources" not in data:
+            data["context_sources"] = {}
+
+        source_name = enable_source or disable_source
+        if source_name not in config.context_sources:
+            console.print(f"[red]Error:[/red] Unknown source '{source_name}'")
+            console.print(f"[dim]Available sources: {', '.join(config.context_sources.keys())}[/dim]")
+            raise typer.Exit(1)
+
+        if source_name not in data["context_sources"]:
+            source_config = config.context_sources[source_name]
+            data["context_sources"][source_name] = source_config.raw_config.copy()
+
+        data["context_sources"][source_name]["enabled"] = bool(enable_source)
+
+        settings_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+        action = "Enabled" if enable_source else "Disabled"
+        console.print(f"[green]{action} '{source_name}'[/green] in {settings_path}")
+        return
+
+    # Default: show settings
+    config = TypesConfig.from_yaml(settings_path)
+
+    # Show top-level settings
+    console.print("\n[bold]Settings[/bold]")
+    console.print(f"  model: [cyan]{config.model}[/cyan]")
+    console.print(f"  total_count: [cyan]{config.total_count}[/cyan]")
+    console.print(f"  feedback_server_port: [cyan]{config.feedback_server_port}[/cyan]")
 
     # Show approaches
     console.print("\n[bold]Approaches[/bold] (how to find):")
-    for approach in config.get_enabled_approaches():
-        weight_str = f"{approach.weight:.0%}" if approach.count is None else f"{approach.count} items"
-        console.print(f"  [cyan]{approach.name}[/cyan]: {approach.display_name} ({weight_str})")
+    for approach in config.approaches.values():
+        status = "[green]enabled[/green]" if approach.enabled else "[dim]disabled[/dim]"
+        console.print(f"  [cyan]{approach.name}[/cyan]: {approach.display_name} ({status})")
 
     # Show media types
     console.print("\n[bold]Media Types[/bold] (what format):")
-    for media in config.get_enabled_media():
-        weight_str = f"{media.weight:.0%}" if media.count is None else f"{media.count} items"
-        console.print(f"  [green]{media.name}[/green]: {media.display_name} ({weight_str})")
+    for media in config.media.values():
+        status = "[green]enabled[/green]" if media.enabled else "[dim]disabled[/dim]"
+        pref = f' - "{media.preference}"' if media.preference else ""
+        console.print(f"  [green]{media.name}[/green]: {media.display_name} ({status}){pref}")
 
-    # Show distribution
-    console.print(f"\n[bold]Distribution[/bold] (total: {config.total_count}):")
-    matrix = config.calculate_distribution()
-    for approach_name, media_counts in matrix.items():
-        items = [f"{m}: ~{c:.0f}" for m, c in media_counts.items()]
-        console.print(f"  [dim]{approach_name}[/dim]: {', '.join(items)}")
+    console.print(f"\n[dim]Agent chooses distribution based on your taste.md[/dim]")
 
     # Show context sources
     if config.context_sources:
@@ -1059,100 +885,10 @@ def types(
             desc = f" - {source.description}" if source.description else ""
             console.print(f"  [yellow]{name}[/yellow]: {status} ({source_type}){desc}")
 
-    if types_path.exists():
-        console.print(f"\n[dim]Config: {types_path}[/dim]")
+    if settings_path.exists():
+        console.print(f"\n[dim]Config: {settings_path}[/dim]")
     else:
-        console.print(f"\n[dim]Using defaults. Run 'serendipity types --edit' to customize.[/dim]")
-
-
-@app.command()
-def sources(
-    show: bool = typer.Option(
-        True,
-        "--show",
-        "-s",
-        help="Show available context sources",
-    ),
-    enable: Optional[str] = typer.Option(
-        None,
-        "--enable",
-        "-e",
-        help="Enable a context source by name",
-    ),
-    disable: Optional[str] = typer.Option(
-        None,
-        "--disable",
-        "-d",
-        help="Disable a context source by name",
-    ),
-) -> None:
-    """Manage context sources (user profile/preferences).
-
-    Context sources provide information about you to Claude:
-    - Loaders: Read from files (taste.md, learnings.md, history)
-    - MCP: Connect to external services (Whorl knowledge base)
-
-    EXAMPLES:
-    $ serendipity sources                  # Show all sources
-    $ serendipity sources --enable whorl   # Enable whorl in config
-    $ serendipity sources --disable history  # Disable history in config
-    """
-    import yaml
-
-    console = Console()
-    storage = StorageManager()
-    types_path = storage.base_dir / "types.yaml"
-
-    # Load config
-    config = TypesConfig.from_yaml(types_path)
-
-    if enable or disable:
-        # Modify the YAML file directly
-        if not types_path.exists():
-            # Create default config first
-            TypesConfig.write_defaults(types_path)
-
-        # Load and modify YAML
-        yaml_content = types_path.read_text()
-        data = yaml.safe_load(yaml_content) or {}
-
-        if "context_sources" not in data:
-            data["context_sources"] = {}
-
-        source_name = enable or disable
-        if source_name not in config.context_sources:
-            console.print(f"[red]Error:[/red] Unknown source '{source_name}'")
-            console.print(f"[dim]Available sources: {', '.join(config.context_sources.keys())}[/dim]")
-            raise typer.Exit(1)
-
-        if source_name not in data["context_sources"]:
-            # Copy from defaults
-            source_config = config.context_sources[source_name]
-            data["context_sources"][source_name] = source_config.raw_config.copy()
-
-        data["context_sources"][source_name]["enabled"] = bool(enable)
-
-        # Write back
-        types_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
-
-        action = "Enabled" if enable else "Disabled"
-        console.print(f"[green]{action} '{source_name}'[/green] in {types_path}")
-        return
-
-    # Default: show sources
-    console.print("\n[bold]Context Sources[/bold]")
-    console.print("[dim]These provide information about you to Claude.[/dim]\n")
-
-    for name, source in config.context_sources.items():
-        status = "[green]●[/green] enabled" if source.enabled else "[dim]○[/dim] disabled"
-        source_type = f"[cyan]{source.type}[/cyan]"
-        console.print(f"  {status}  [bold]{name}[/bold] ({source_type})")
-        if source.description:
-            console.print(f"           [dim]{source.description}[/dim]")
-
-    console.print(f"\n[dim]Enable at runtime: serendipity discover -s <name>[/dim]")
-    console.print(f"[dim]Enable permanently: serendipity sources --enable <name>[/dim]")
-    console.print(f"[dim]Edit config: serendipity types --edit[/dim]")
+        console.print(f"\n[dim]Using defaults. Run 'serendipity settings --edit' to customize.[/dim]")
 
 
 @profile_app.command()
@@ -1186,7 +922,7 @@ def taste(
     storage = StorageManager()
     storage.ensure_dirs()
 
-    taste_path = storage.get_taste_path()
+    taste_path = storage.taste_path
 
     if clear:
         if not typer.confirm("Clear your taste profile? This cannot be undone."):

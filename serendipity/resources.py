@@ -58,7 +58,7 @@ def get_default_config(name: str) -> str:
     """Load a default config file from serendipity/config/defaults/.
 
     Args:
-        name: Config filename (e.g., "types.yaml")
+        name: Config filename (e.g., "settings.yaml")
 
     Returns:
         Config content as string
@@ -66,6 +66,6 @@ def get_default_config(name: str) -> str:
     return files("serendipity.config.defaults").joinpath(name).read_text()
 
 
-def get_default_types_yaml() -> str:
-    """Get the default types.yaml configuration."""
-    return get_default_config("types.yaml")
+def get_default_settings_yaml() -> str:
+    """Get the default settings.yaml configuration."""
+    return get_default_config("settings.yaml")

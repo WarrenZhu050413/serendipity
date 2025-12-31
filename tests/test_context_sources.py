@@ -355,12 +355,29 @@ class TestMCPServerSource:
         assert source.get_allowed_tools() == ["tool1", "tool2"]
 
     def test_get_system_prompt_hint(self):
-        """Test get_system_prompt_hint."""
+        """Test get_system_prompt_hint with legacy key."""
         config = {
             "system_prompt_hint": "Use this tool first",
         }
         source = MCPServerSource("test", config)
         assert source.get_system_prompt_hint() == "Use this tool first"
+
+    def test_get_system_prompt_hint_with_prompt_hint(self):
+        """Test get_system_prompt_hint with new prompt_hint key."""
+        config = {
+            "prompt_hint": "Use the new key",
+        }
+        source = MCPServerSource("test", config)
+        assert source.get_system_prompt_hint() == "Use the new key"
+
+    def test_prompt_hint_takes_precedence(self):
+        """Test that prompt_hint takes precedence over system_prompt_hint."""
+        config = {
+            "prompt_hint": "New hint",
+            "system_prompt_hint": "Old hint",
+        }
+        source = MCPServerSource("test", config)
+        assert source.get_system_prompt_hint() == "New hint"
 
 
 class TestContextSourceManager:

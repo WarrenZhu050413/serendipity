@@ -1,23 +1,23 @@
-# yaml-language-server: $schema=./types.schema.json
-# Serendipity Configuration
-# -------------------------
-# Two dimensions: approaches (how to find) × media (what format)
-# Plus context_sources for user profile/context
+# yaml-language-server: $schema=./settings.schema.json
+# Serendipity Settings
+# --------------------
+# Single source of truth for all configuration.
+# To restore defaults: serendipity settings --reset
 #
-# Schema: serendipity/config/defaults/types.schema.json
-# To restore defaults: serendipity types --reset
+# Schema: serendipity/config/defaults/settings.schema.json
 
 version: 2
+
+# Top-level settings
+model: opus
 total_count: 10
-agent_mode: autonomous  # "autonomous" or "strict"
+feedback_server_port: 9876
 
 # APPROACHES - How to find recommendations
 approaches:
   convergent:
     display_name: "More Like This"
-    description: "Content that directly matches your stated taste"
     enabled: true
-    weight: 0.5
     prompt_hint: |
       For CONVERGENT recommendations:
       - Match their explicit interests directly
@@ -27,9 +27,7 @@ approaches:
 
   divergent:
     display_name: "Expand Your Palette"
-    description: "Surprising content that shares underlying qualities"
     enabled: true
-    weight: 0.5
     prompt_hint: |
       For DIVERGENT recommendations:
       - Find content that shares UNDERLYING qualities, not surface features
@@ -41,19 +39,16 @@ approaches:
 media:
   article:
     display_name: "Articles & Essays"
-    description: "Long-form written content"
     enabled: true
-    weight: 0.35
     sources:
       - tool: WebSearch
         hints: "{query} essay OR article OR longread"
     prompt_hint: "Prioritize long-form over listicles. Quality publications and personal blogs with voice."
+    # preference: "my favorite format"  # optional natural language hint
 
   youtube:
     display_name: "YouTube Videos"
-    description: "Video content for learning or entertainment"
     enabled: true
-    weight: 0.25
     sources:
       - tool: WebSearch
         hints: "site:youtube.com {query}"
@@ -63,12 +58,11 @@ media:
         required: true
       - name: duration
         required: true
+    # preference: "only if can't get elsewhere"
 
   book:
     display_name: "Books"
-    description: "Books to read"
     enabled: true
-    weight: 0.25
     sources:
       - tool: WebSearch
         hints: "site:goodreads.com {query} book"
@@ -78,12 +72,11 @@ media:
         required: true
       - name: year
         required: false
+    # preference: "love these"
 
   podcast:
     display_name: "Podcasts"
-    description: "Audio content"
     enabled: true
-    weight: 0.15
     sources:
       - tool: WebSearch
         hints: "{query} podcast episode"
@@ -93,11 +86,9 @@ media:
         required: true
       - name: episode
         required: false
+    # preference: "trying to listen more during commutes"
 
 # CONTEXT SOURCES - Where to get user profile/preferences
-# Two types:
-#   - loader: Python function that returns content
-#   - mcp: MCP server providing tools for Claude
 context_sources:
   taste:
     type: loader
@@ -150,7 +141,7 @@ context_sources:
   # MCP sources (disabled by default)
   whorl:
     type: mcp
-    enabled: false  # Enable with: serendipity sources --enable whorl
+    enabled: false  # Enable with: serendipity settings --enable-source whorl
     description: "Personal knowledge base via Whorl"
     server:
       url: http://localhost:{port}/mcp/
@@ -178,7 +169,7 @@ context_sources:
         - mcp__whorl__agent_search_agent_search_post
         - mcp__whorl__ingest_ingest_post
         - mcp__whorl__bash_bash_post
-    system_prompt_hint: |
+    prompt_hint: |
       You have access to the user's personal knowledge base via Whorl MCP tools.
       IMPORTANT: Search Whorl FIRST using mcp__whorl__text_search_text_search_post
       to understand their preferences, interests, and past writings before making

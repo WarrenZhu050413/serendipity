@@ -105,39 +105,28 @@ class TestPromptBuilder:
         assert "YouTube Videos" not in section
         assert "Articles & Essays" in section
 
-    def test_build_distribution_table(self, builder):
-        """Test distribution table generation."""
-        table = builder.build_distribution_table()
+    def test_build_distribution_guidance(self, builder):
+        """Test distribution guidance generation."""
+        guidance = builder.build_distribution_guidance()
 
         # Should contain header
-        assert "## RECOMMENDED DISTRIBUTION" in table
+        assert "## DISTRIBUTION" in guidance
 
         # Should contain total count
-        assert "Total: 10" in table
+        assert "Total: 10" in guidance
 
-        # Should be a markdown table
-        assert "|" in table
-        assert "Approach" in table
+        # Should encourage agent autonomy
+        assert "choose" in guidance.lower()
+        assert "taste" in guidance.lower()
 
-        # Should contain both approaches
-        assert "Convergent" in table
-        assert "Divergent" in table
-
-    def test_build_distribution_table_autonomous_mode(self, default_config):
-        """Test distribution table shows autonomous guidance."""
-        default_config.agent_mode = "autonomous"
+    def test_build_distribution_guidance_with_preferences(self, default_config):
+        """Test distribution guidance includes user preferences."""
+        default_config.media["podcast"].preference = "I want more podcasts"
         builder = PromptBuilder(default_config)
-        table = builder.build_distribution_table()
+        guidance = builder.build_distribution_guidance()
 
-        assert "judgment" in table.lower()
-
-    def test_build_distribution_table_strict_mode(self, default_config):
-        """Test distribution table shows strict guidance."""
-        default_config.agent_mode = "strict"
-        builder = PromptBuilder(default_config)
-        table = builder.build_distribution_table()
-
-        assert "strict" in table.lower()
+        assert "User preferences" in guidance
+        assert "I want more podcasts" in guidance
 
     def test_build_output_schema(self, builder):
         """Test output schema generation."""
@@ -166,7 +155,7 @@ class TestPromptBuilder:
         # Should contain all sections
         assert "## APPROACH TYPES" in guidance
         assert "## MEDIA TYPES" in guidance
-        assert "## RECOMMENDED DISTRIBUTION" in guidance
+        assert "## DISTRIBUTION" in guidance
         assert "## OUTPUT FORMAT" in guidance
 
         # Should be properly joined with newlines
@@ -179,8 +168,6 @@ class TestPromptBuilder:
                 "deep_dive": ApproachType(
                     name="deep_dive",
                     display_name="Deep Dive",
-                    description="In-depth content",
-                    weight=1.0,
                     prompt_hint="Find comprehensive resources",
                 ),
             },
@@ -188,8 +175,6 @@ class TestPromptBuilder:
                 "archive": MediaType(
                     name="archive",
                     display_name="Academic Papers",
-                    description="Research papers",
-                    weight=1.0,
                     sources=[Source(tool="WebSearch", hints="site:arxiv.org")],
                 ),
             },
@@ -220,8 +205,8 @@ class TestPromptBuilderEdgeCases:
     def test_media_without_sources(self):
         """Test media type without search sources."""
         config = TypesConfig(
-            approaches={"test": ApproachType(name="test", display_name="Test", description="Test", weight=1.0)},
-            media={"test": MediaType(name="test", display_name="Test", description="Test", weight=1.0, sources=[])},
+            approaches={"test": ApproachType(name="test", display_name="Test")},
+            media={"test": MediaType(name="test", display_name="Test", sources=[])},
         )
         builder = PromptBuilder(config)
         section = builder.build_media_section()
@@ -232,8 +217,8 @@ class TestPromptBuilderEdgeCases:
     def test_media_without_metadata_schema(self):
         """Test media type without metadata schema."""
         config = TypesConfig(
-            approaches={"test": ApproachType(name="test", display_name="Test", description="Test", weight=1.0)},
-            media={"test": MediaType(name="test", display_name="Test", description="Test", weight=1.0, metadata_schema=[])},
+            approaches={"test": ApproachType(name="test", display_name="Test")},
+            media={"test": MediaType(name="test", display_name="Test", metadata_schema=[])},
         )
         builder = PromptBuilder(config)
         section = builder.build_media_section()
@@ -248,12 +233,10 @@ class TestPromptBuilderEdgeCases:
                 "test": ApproachType(
                     name="test",
                     display_name="Test",
-                    description="Test approach",
-                    weight=1.0,
                     prompt_hint="",  # Empty hint
                 ),
             },
-            media={"test": MediaType(name="test", display_name="Test", description="Test", weight=1.0)},
+            media={"test": MediaType(name="test", display_name="Test")},
         )
         builder = PromptBuilder(config)
         section = builder.build_approach_section()
@@ -264,13 +247,11 @@ class TestPromptBuilderEdgeCases:
     def test_unknown_media_type_uses_default_icon(self):
         """Test that unknown media type uses default icon."""
         config = TypesConfig(
-            approaches={"test": ApproachType(name="test", display_name="Test", description="Test", weight=1.0)},
+            approaches={"test": ApproachType(name="test", display_name="Test")},
             media={
                 "custom_type": MediaType(
                     name="custom_type",
                     display_name="Custom Type",
-                    description="A custom type",
-                    weight=1.0,
                 ),
             },
         )
