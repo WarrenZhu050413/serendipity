@@ -3,15 +3,21 @@
 import asyncio
 import json
 import re
+import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import httpx
+import structlog
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -21,7 +27,131 @@ from rich.console import Console
 
 from serendipity.display import AgentDisplay, DisplayConfig
 
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.format_exc_info,
+        structlog.dev.ConsoleRenderer() if sys.stdout.isatty()
+        else structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.stdlib.BoundLogger,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+)
+
+logger = structlog.get_logger()
+
 PROMPT_TEMPLATE = Path(__file__).parent / "prompt.txt"
+WHORL_PLUGIN_PATH = Path(__file__).parent / "plugins" / "whorl"
+WHORL_PORT = 8081
+WHORL_LOG_PATH = Path.home() / ".whorl" / "server.log"
+
+
+def check_whorl_setup(console: Console) -> tuple[bool, str]:
+    """Check if whorl is properly set up.
+
+    Args:
+        console: Rich console for output
+
+    Returns:
+        Tuple of (is_ready, error_message)
+    """
+    import shutil
+
+    # Check 1: Is whorl CLI installed?
+    if not shutil.which("whorl"):
+        return False, (
+            "[red]Whorl not installed.[/red]\n\n"
+            "To use whorl integration, install it first:\n"
+            "  [cyan]pip install whorled[/cyan]\n"
+            "  [cyan]whorl init[/cyan]\n\n"
+            "Then add documents to [cyan]~/.whorl/docs/[/cyan]"
+        )
+
+    # Check 2: Is whorl initialized?
+    whorl_home = Path.home() / ".whorl"
+    if not whorl_home.exists():
+        return False, (
+            "[red]Whorl not initialized.[/red]\n\n"
+            "Run the following to set up whorl:\n"
+            "  [cyan]whorl init[/cyan]\n\n"
+            "Then add documents to [cyan]~/.whorl/docs/[/cyan]"
+        )
+
+    # Check 3: Are there any documents?
+    docs_dir = whorl_home / "docs"
+    if not docs_dir.exists() or not any(docs_dir.iterdir()):
+        return False, (
+            "[yellow]Whorl has no documents.[/yellow]\n\n"
+            "Add documents to your knowledge base:\n"
+            "  [cyan]whorl upload ~/notes[/cyan]  # Upload a folder\n"
+            "  Or copy files to [cyan]~/.whorl/docs/[/cyan]\n\n"
+            "Continuing without whorl integration..."
+        )
+
+    return True, ""
+
+
+def ensure_whorl_running(console: Console) -> bool:
+    """Ensure the whorl server is running.
+
+    Args:
+        console: Rich console for output
+
+    Returns:
+        True if whorl is running, False if failed to start
+    """
+    # First check if whorl is properly set up
+    is_ready, error_msg = check_whorl_setup(console)
+    if not is_ready:
+        console.print(error_msg)
+        # If it's just empty docs, we can still try to run
+        if "no documents" not in error_msg.lower():
+            return False
+
+    # Check if whorl is already running
+    try:
+        response = httpx.get(f"http://localhost:{WHORL_PORT}/health", timeout=2.0)
+        if response.status_code == 200:
+            console.print(f"[dim]Whorl server already running on port {WHORL_PORT}[/dim]")
+            return True
+    except httpx.RequestError:
+        pass
+
+    # Try to start whorl server
+    console.print(f"[yellow]Starting whorl server on port {WHORL_PORT}...[/yellow]")
+    try:
+        WHORL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(WHORL_LOG_PATH, "a") as log_file:
+            subprocess.Popen(
+                ["whorl", "server", "--port", str(WHORL_PORT)],
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
+
+        # Wait for server to start
+        for _ in range(10):
+            time.sleep(0.5)
+            try:
+                response = httpx.get(f"http://localhost:{WHORL_PORT}/health", timeout=2.0)
+                if response.status_code == 200:
+                    console.print(f"[green]Whorl server started on port {WHORL_PORT}[/green]")
+                    return True
+            except httpx.RequestError:
+                continue
+
+        console.print(f"[red]Failed to start whorl server. Check {WHORL_LOG_PATH}[/red]")
+        return False
+
+    except FileNotFoundError:
+        console.print("[red]whorl command not found. Install with: pip install whorled[/red]")
+        return False
+    except Exception as e:
+        console.print(f"[red]Failed to start whorl: {e}[/red]")
+        return False
 
 
 @dataclass
@@ -60,6 +190,7 @@ class SerendipityAgent:
         console: Optional[Console] = None,
         model: str = "opus",
         verbose: bool = False,
+        whorl: bool = False,
     ):
         """Initialize the Serendipity agent.
 
@@ -67,13 +198,32 @@ class SerendipityAgent:
             console: Rich console for output
             model: Claude model to use (haiku, sonnet, opus)
             verbose: Show detailed progress
+            whorl: Enable whorl integration for personalized context
         """
         self.console = console or Console()
         self.model = model
         self.verbose = verbose
+        self.whorl = whorl
         self.prompt_template = PROMPT_TEMPLATE.read_text()
         self.last_session_id: Optional[str] = None
         self.cost_usd: Optional[float] = None
+
+        # Initialize whorl if enabled
+        if self.whorl:
+            if not ensure_whorl_running(self.console):
+                self.console.print("[yellow]Continuing without whorl integration[/yellow]")
+                self.whorl = False
+
+    def _get_plugins(self) -> list[dict]:
+        """Get plugin configurations.
+
+        Returns:
+            List of plugin configs for ClaudeAgentOptions
+        """
+        plugins = []
+        if self.whorl:
+            plugins.append({"type": "local", "path": str(WHORL_PLUGIN_PATH)})
+        return plugins
 
     async def discover(
         self,
@@ -111,11 +261,30 @@ class SerendipityAgent:
             n2=n2,
         )
 
+        # Build allowed tools list
+        allowed_tools = ["WebFetch", "WebSearch"]
+
+        # Add whorl MCP tools if enabled
+        if self.whorl:
+            allowed_tools.extend([
+                "mcp__whorl__text_search_text_search_post",
+                "mcp__whorl__agent_search_agent_search_post",
+                "mcp__whorl__ingest_ingest_post",
+                "mcp__whorl__bash_bash_post",
+            ])
+
+        # Build options with plugins if whorl is enabled
+        plugins = self._get_plugins()
         options = ClaudeAgentOptions(
             model=self.model,
-            system_prompt="You are a discovery engine.",
-            max_turns=20,  # Enough for multiple searches
-            allowed_tools=["WebFetch", "WebSearch"],
+            system_prompt="You are a discovery engine." + (
+                " You have access to the user's personal knowledge base via whorl. "
+                "Search it FIRST to understand their preferences and interests before making recommendations."
+                if self.whorl else ""
+            ),
+            max_turns=50 if self.whorl else 20,  # More turns for whorl searches
+            allowed_tools=allowed_tools,
+            plugins=plugins if plugins else None,
         )
 
         response_text = []
@@ -132,7 +301,27 @@ class SerendipityAgent:
             await client.query(prompt)
 
             async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
+                # Log system init message for debugging plugins/MCP
+                if isinstance(msg, SystemMessage) and msg.subtype == "init":
+                    data = msg.data
+                    loaded_plugins = data.get("plugins", [])
+                    slash_commands = data.get("slash_commands", [])
+                    mcp_servers = data.get("mcp_servers", [])
+
+                    logger.info(
+                        "SDK initialized",
+                        plugins=[p.get("name") for p in loaded_plugins] if loaded_plugins else [],
+                        slash_commands=slash_commands,
+                        mcp_servers=mcp_servers,
+                        whorl_enabled=self.whorl,
+                    )
+
+                    if self.verbose and loaded_plugins:
+                        self.console.print(f"[dim]Loaded plugins: {[p.get('name') for p in loaded_plugins]}[/dim]")
+                        if mcp_servers:
+                            self.console.print(f"[dim]MCP servers: {mcp_servers}[/dim]")
+
+                elif isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, ThinkingBlock):
                             display.show_thinking(block.thinking)
@@ -220,11 +409,23 @@ Output as JSON:
   "{rec_type}": [{{"url": "...", "reason": "..."}}]
 }}"""
 
+        # Build allowed tools list
+        allowed_tools = ["WebFetch", "WebSearch"]
+        if self.whorl:
+            allowed_tools.extend([
+                "mcp__whorl__text_search_text_search_post",
+                "mcp__whorl__agent_search_agent_search_post",
+                "mcp__whorl__ingest_ingest_post",
+                "mcp__whorl__bash_bash_post",
+            ])
+
+        plugins = self._get_plugins()
         options = ClaudeAgentOptions(
             model=self.model,
             system_prompt="You are a discovery engine.",
-            max_turns=10,
-            allowed_tools=["WebFetch", "WebSearch"],
+            max_turns=50 if self.whorl else 10,
+            allowed_tools=allowed_tools,
+            plugins=plugins if plugins else None,
             resume=session_id,  # Resume the previous session
         )
 
@@ -238,11 +439,28 @@ Output as JSON:
             config=DisplayConfig(verbose=self.verbose),
         )
 
+        logger.info(
+            "get_more starting",
+            session_id=session_id,
+            rec_type=rec_type,
+            count=count,
+            whorl_enabled=self.whorl,
+        )
+
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
 
             async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
+                # Log system init message for debugging plugins/MCP
+                if isinstance(msg, SystemMessage) and msg.subtype == "init":
+                    data = msg.data
+                    logger.info(
+                        "SDK resumed",
+                        plugins=[p.get("name") for p in data.get("plugins", [])],
+                        mcp_servers=data.get("mcp_servers", []),
+                    )
+
+                elif isinstance(msg, AssistantMessage):
                     for block in msg.content:
                         if isinstance(block, ThinkingBlock):
                             display.show_thinking(block.thinking)

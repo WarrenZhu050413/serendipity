@@ -1,0 +1,11 @@
+{
+  "name": "whorl",
+  "version": "0.1.0",
+  "description": "Personal knowledge base integration for serendipity - search your notes, journals, and documents for context",
+  "author": {
+    "name": "Warren Zhu"
+  },
+  "skills": [
+    "whorl-mode"
+  ]
+}

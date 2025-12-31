@@ -26,6 +26,8 @@ dependencies = [
     "aiohttp>=3.9.0",
     "questionary>=2.0.0",
     "rank-bm25>=0.2.0",
+    "httpx>=0.25.0",
+    "structlog>=24.0.0",
 ]
 
 [project.scripts]

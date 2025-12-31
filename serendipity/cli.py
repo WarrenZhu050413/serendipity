@@ -386,6 +386,12 @@ def discover_cmd(
         "--no-preferences",
         help="Don't include preferences.md for this run",
     ),
+    whorl: bool = typer.Option(
+        False,
+        "--whorl",
+        "-w",
+        help="Enable whorl integration (search personal knowledge base for context)",
+    ),
 ) -> None:
     """Discover convergent and divergent content recommendations.
 
@@ -396,6 +402,7 @@ def discover_cmd(
       [dim]$[/dim] serendipity discover -i               [dim]# Open editor[/dim]
       [dim]$[/dim] serendipity discover context.md --n1 3 --n2 8
       [dim]$[/dim] serendipity discover context.md -o terminal  [dim]# No browser[/dim]
+      [dim]$[/dim] serendipity discover context.md -w    [dim]# With whorl knowledge base[/dim]
     """
     # Load storage and config
     storage = StorageManager()
@@ -467,7 +474,7 @@ def discover_cmd(
         ))
 
     # Run discovery
-    agent = SerendipityAgent(console=console, model=model, verbose=verbose)
+    agent = SerendipityAgent(console=console, model=model, verbose=verbose, whorl=whorl)
 
     console.print("[bold green]Discovering...[/bold green]")
     console.print()

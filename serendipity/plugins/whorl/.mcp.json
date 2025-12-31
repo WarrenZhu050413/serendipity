@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "whorl": {
+      "url": "http://localhost:8081/mcp/",
+      "type": "http",
+      "headers": {
+        "X-Password": "whorl"
+      }
+    }
+  }
+}
