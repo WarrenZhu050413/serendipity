@@ -635,31 +635,29 @@ def discover_cmd(
     if no_history:
         sources_to_disable.extend(["history", "learnings"])
 
-    # Initialize sources (checks setup, starts MCP servers)
-    init_warnings = asyncio.get_event_loop().run_until_complete(
-        ctx_manager.initialize(
+    # Initialize sources and build context (async operations)
+    async def init_and_build_context():
+        # Initialize sources (checks setup, starts MCP servers)
+        init_warnings = await ctx_manager.initialize(
             enable_sources=sources_to_enable,
             disable_sources=sources_to_disable,
         )
+        # Build context from all enabled sources
+        context_aug, load_warnings = await ctx_manager.build_context(storage)
+        # Extract style_guidance (backwards compatibility)
+        style_guide = ""
+        if "style_guidance" in ctx_manager.sources and ctx_manager.sources["style_guidance"].enabled:
+            style_result = await ctx_manager.sources["style_guidance"].load(storage)
+            style_guide = style_result.prompt_section
+        return init_warnings, context_aug, load_warnings, style_guide
+
+    init_warnings, context_augmentation, load_warnings, style_guidance = asyncio.run(
+        init_and_build_context()
     )
     for warn_msg in init_warnings:
         console.print(warning(warn_msg))
-
-    # Build context from all enabled sources
-    context_augmentation, load_warnings = asyncio.get_event_loop().run_until_complete(
-        ctx_manager.build_context(storage)
-    )
     for warn_msg in load_warnings:
         console.print(warning(warn_msg))
-
-    # Extract style_guidance from context (it's now part of the unified system)
-    # For backwards compatibility, we pass it separately to agent
-    style_guidance = ""
-    if "style_guidance" in ctx_manager.sources and ctx_manager.sources["style_guidance"].enabled:
-        style_result = asyncio.get_event_loop().run_until_complete(
-            ctx_manager.sources["style_guidance"].load(storage)
-        )
-        style_guidance = style_result.prompt_section
 
     # Check total context length
     total_context = context_augmentation + "\n\n" + context
