@@ -22,7 +22,7 @@ from serendipity.resources import get_base_template
 
 # Config setting descriptions
 CONFIG_DESCRIPTIONS = {
-    "preferences_path": "Path to your taste profile (markdown file with your preferences)",
+    "taste_path": "Path to your taste profile (markdown file with your aesthetic preferences)",
     "template_path": "Path to HTML template (copied from package default on first use)",
     "history_enabled": "Track recommendations to avoid repeats and learn from feedback",
     "max_recent_history": "Number of recent items to include in context (avoids repeating)",
@@ -31,6 +31,7 @@ CONFIG_DESCRIPTIONS = {
     "default_n1": "Default number of convergent recommendations (more of what you like)",
     "default_n2": "Default number of divergent recommendations (expand your taste)",
     "html_style": "HTML styling preference (null=auto-generate based on taste)",
+    "max_thinking_tokens": "Max tokens for extended thinking (null=disabled, 10000=default when enabled)",
 }
 from serendipity.storage import Config, HistoryEntry, StorageManager
 
@@ -44,14 +45,14 @@ app = typer.Typer(
     invoke_without_command=True,
 )
 
-# Context subcommand group for managing what gets injected into Claude
-context_app = typer.Typer(
-    name="context",
-    help="View and manage the context injected into Claude's prompt",
+# Profile subcommand group for managing what Claude knows about you
+profile_app = typer.Typer(
+    name="profile",
+    help="View and manage your profile (what Claude knows about you)",
     rich_markup_mode="rich",
     invoke_without_command=True,
 )
-app.add_typer(context_app, name="context")
+app.add_typer(profile_app, name="profile")
 
 console = Console()
 
@@ -59,25 +60,27 @@ console = Console()
 @app.callback()
 def callback(ctx: typer.Context) -> None:
     """Personal Serendipity Engine - discover convergent and divergent content recommendations."""
-    # If no subcommand was invoked, show help
+    # If no subcommand was invoked, run discover with defaults ("surprise me" mode)
     if ctx.invoked_subcommand is None:
-        # Show usage panel instead of full help
-        console.print(Panel(
-            "[bold]Commands:[/bold]\n\n"
-            "  serendipity discover context.md   # Run discovery\n"
-            "  serendipity config                # Manage configuration\n"
-            "  serendipity context               # View/manage what Claude sees\n\n"
-            "[bold]Quick usage:[/bold]\n\n"
-            "  serendipity discover context.md   # From file\n"
-            "  serendipity discover -p           # From clipboard\n"
-            "  serendipity discover -i           # Open editor\n",
-            title="serendipity",
-            border_style="blue",
-        ))
+        # Call discover_cmd directly with default values
+        discover_cmd(
+            file_path=None,
+            n1=None,
+            n2=None,
+            paste=False,
+            interactive=False,
+            model=None,
+            output_format="html",
+            verbose=False,
+            no_history=False,
+            no_taste=False,
+            whorl=False,
+            thinking=None,
+        )
 
 
-@context_app.callback()
-def context_callback(
+@profile_app.callback()
+def profile_callback(
     ctx: typer.Context,
     verbose: bool = typer.Option(
         False,
@@ -86,9 +89,9 @@ def context_callback(
         help="Show word counts per section",
     ),
 ) -> None:
-    """Preview what context gets injected into Claude's prompt.
+    """Preview your profile - what Claude knows about you.
 
-    Shows preferences, rules, recent history, and pending feedback.
+    Shows taste, learnings, recent history, and pending feedback.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -96,39 +99,44 @@ def context_callback(
     storage = StorageManager()
     storage.ensure_dirs()
 
+    # Run migration if needed
+    migrations = storage.migrate_if_needed()
+    for msg in migrations:
+        console.print(f"[yellow]{msg}[/yellow]")
+
     output_lines = []
 
-    # Preferences section
-    preferences = storage.load_preferences()
-    if preferences.strip():
+    # Taste section
+    taste = storage.load_taste()
+    if taste.strip():
         # Check if it's still the default template
-        if "Describe your aesthetic preferences" in preferences and "Examples:" in preferences:
-            pref_display = "[dim]Default template (not customized)[/dim]"
-            pref_words = 0
+        if "Describe your aesthetic preferences" in taste and "Examples:" in taste:
+            taste_display = "[dim]Default template (not customized)[/dim]"
+            taste_words = 0
         else:
-            pref_words = storage.count_words(preferences)
-            pref_display = preferences[:500] + "..." if len(preferences) > 500 else preferences
+            taste_words = storage.count_words(taste)
+            taste_display = taste[:500] + "..." if len(taste) > 500 else taste
     else:
-        pref_display = "[dim]Not set[/dim]"
-        pref_words = 0
+        taste_display = "[dim]Not set[/dim]"
+        taste_words = 0
 
-    header = "PREFERENCES" + (f" ({pref_words} words)" if verbose and pref_words else "")
+    header = "TASTE" + (f" ({taste_words} words)" if verbose and taste_words else "")
     output_lines.append(f"[bold cyan]{header}[/bold cyan]")
-    output_lines.append(pref_display)
+    output_lines.append(taste_display)
     output_lines.append("")
 
-    # Rules section
-    rules_content = storage.load_rules()
-    if rules_content.strip():
-        rules_words = storage.count_words(rules_content)
-        rules_display = rules_content[:500] + "..." if len(rules_content) > 500 else rules_content
+    # Learnings section
+    learnings_content = storage.load_learnings()
+    if learnings_content.strip():
+        learnings_words = storage.count_words(learnings_content)
+        learnings_display = learnings_content[:500] + "..." if len(learnings_content) > 500 else learnings_content
     else:
-        rules_display = "[dim]No rules defined[/dim]"
-        rules_words = 0
+        learnings_display = "[dim]No learnings yet[/dim]"
+        learnings_words = 0
 
-    header = "DISCOVERY RULES" + (f" ({rules_words} words)" if verbose and rules_words else "")
+    header = "LEARNINGS" + (f" ({learnings_words} words)" if verbose and learnings_words else "")
     output_lines.append(f"[bold cyan]{header}[/bold cyan]")
-    output_lines.append(rules_display)
+    output_lines.append(learnings_display)
     output_lines.append("")
 
     # Recent history section
@@ -158,20 +166,20 @@ def context_callback(
 
     # Total word count
     if verbose:
-        total_words = pref_words + rules_words
+        total_words = taste_words + learnings_words
         output_lines.append("")
         output_lines.append(f"[dim]Total context: ~{total_words} words (excluding history)[/dim]")
 
     console.print(Panel(
         "\n".join(output_lines),
-        title="Model Context Preview",
+        title="Your Profile",
         border_style="blue",
     ))
 
     console.print("\n[bold]Subcommands:[/bold]")
-    console.print("  serendipity context preferences   # Edit taste profile")
-    console.print("  serendipity context history       # View history")
-    console.print("  serendipity context rules         # Manage rules")
+    console.print("  serendipity profile taste      # Edit your taste profile")
+    console.print("  serendipity profile history    # View history")
+    console.print("  serendipity profile learnings  # Manage learnings")
 
 
 # Rich formatting helpers
@@ -247,7 +255,7 @@ def _get_context(
     file_path: Optional[Path],
     paste: bool,
     interactive: bool,
-) -> str:
+) -> Optional[str]:
     """Get context from various sources using priority waterfall.
 
     Priority:
@@ -255,7 +263,10 @@ def _get_context(
     2. -p flag (clipboard)
     3. -i flag (editor)
     4. Stdin (if piped)
-    5. Error
+    5. None (surprise me mode)
+
+    Returns:
+        Context string or None if no input provided.
     """
     # 1. File argument
     if file_path is not None:
@@ -285,18 +296,8 @@ def _get_context(
     if stdin_content:
         return stdin_content
 
-    # 5. No input - show help
-    console.print(Panel(
-        "[bold]Usage:[/bold]\n\n"
-        "  serendipity context.md          # From file\n"
-        "  serendipity -                   # From stdin\n"
-        "  serendipity -p                  # From clipboard\n"
-        "  serendipity -i                  # Open editor\n"
-        "  cat notes.md | serendipity      # Piped stdin\n",
-        title="serendipity",
-        border_style="blue",
-    ))
-    raise typer.Exit(code=0)
+    # 5. No input - return None for "surprise me" mode
+    return None
 
 
 def _display_terminal(result) -> None:
@@ -502,10 +503,10 @@ def discover_cmd(
         "--no-history",
         help="Don't use or save history for this run",
     ),
-    no_preferences: bool = typer.Option(
+    no_taste: bool = typer.Option(
         False,
-        "--no-preferences",
-        help="Don't include preferences.md for this run",
+        "--no-taste",
+        help="Don't include taste profile for this run",
     ),
     whorl: bool = typer.Option(
         False,
@@ -513,22 +514,34 @@ def discover_cmd(
         "-w",
         help="Enable Whorl integration (search personal knowledge base for context)",
     ),
+    thinking: Optional[int] = typer.Option(
+        None,
+        "--thinking",
+        "-t",
+        help="Enable extended thinking with specified token budget (e.g., 10000)",
+    ),
 ) -> None:
     """Discover convergent and divergent content recommendations.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity discover context.md       [dim]# From file[/dim]
-      [dim]$[/dim] serendipity discover -                [dim]# From stdin[/dim]
-      [dim]$[/dim] serendipity discover -p               [dim]# From clipboard[/dim]
-      [dim]$[/dim] serendipity discover -i               [dim]# Open editor[/dim]
-      [dim]$[/dim] serendipity discover context.md --n1 3 --n2 8
-      [dim]$[/dim] serendipity discover context.md -o terminal  [dim]# No browser[/dim]
-      [dim]$[/dim] serendipity discover context.md -w    [dim]# With Whorl knowledge base[/dim]
+      [dim]$[/dim] serendipity                           [dim]# Surprise me (uses profile)[/dim]
+      [dim]$[/dim] serendipity "I'm in the mood for..."  [dim]# Quick prompt[/dim]
+      [dim]$[/dim] serendipity notes.md                  [dim]# From file[/dim]
+      [dim]$[/dim] serendipity -p                        [dim]# From clipboard[/dim]
+      [dim]$[/dim] serendipity -i                        [dim]# Open editor[/dim]
+      [dim]$[/dim] serendipity --n1 3 --n2 8             [dim]# Custom counts[/dim]
+      [dim]$[/dim] serendipity -o terminal               [dim]# No browser[/dim]
+      [dim]$[/dim] serendipity -w                        [dim]# With Whorl knowledge base[/dim]
     """
     # Load storage and config
     storage = StorageManager()
     storage.ensure_dirs()
     config = storage.load_config()
+
+    # Run migration if needed
+    migrations = storage.migrate_if_needed()
+    for msg in migrations:
+        console.print(f"[yellow]{msg}[/yellow]")
 
     # Use config defaults if not specified
     if model is None:
@@ -537,9 +550,43 @@ def discover_cmd(
         n1 = config.default_n1
     if n2 is None:
         n2 = config.default_n2
+    # Use CLI thinking value, or fall back to config
+    max_thinking_tokens = thinking if thinking is not None else config.max_thinking_tokens
 
     # Get context from input sources
     context = _get_context(file_path, paste, interactive)
+
+    # Handle "surprise me" mode (no input provided)
+    if context is None:
+        # Check if user has a customized taste profile
+        taste = storage.load_taste()
+        has_taste = taste.strip() and not (
+            "Describe your aesthetic preferences" in taste and "Examples:" in taste
+        )
+
+        if not has_taste:
+            # No profile - show onboarding
+            console.print(Panel(
+                "[bold]Welcome to Serendipity![/bold]\n\n"
+                "To get personalized recommendations, first set up your taste profile:\n\n"
+                "  serendipity profile taste --edit\n\n"
+                "Or provide context for what you're looking for:\n\n"
+                "  serendipity \"I'm in the mood for...\"    # Quick prompt\n"
+                "  serendipity -i                          # Open editor\n"
+                "  serendipity notes.md                    # From file\n",
+                title="Getting Started",
+                border_style="blue",
+            ))
+            raise typer.Exit(code=0)
+
+        # Has profile - use "surprise me" mode
+        context = (
+            "Surprise me! Based on my taste profile and what I've liked before, "
+            "recommend things you think I'll enjoy. No specific mood or topic - "
+            "just your best guesses for what would delight me right now."
+        )
+        console.print("[dim]No input provided - running in 'surprise me' mode[/dim]")
+        console.print()
 
     # Build context augmentation
     context_augmentation = ""
@@ -549,24 +596,24 @@ def discover_cmd(
     def warn_long_context(msg: str) -> None:
         console.print(warning(msg))
 
-    if not no_preferences:
-        preferences = storage.load_preferences()
-        if preferences.strip():
+    if not no_taste:
+        taste = storage.load_taste()
+        if taste.strip():
             # Check if it's still the default template (not customized)
-            if "Describe your aesthetic preferences" in preferences and "Examples:" in preferences:
+            if "Describe your aesthetic preferences" in taste and "Examples:" in taste:
                 console.print(warning(
-                    "Preferences file contains default template. "
-                    "Run 'serendipity context preferences' to customize it. Skipping for now."
+                    "Taste profile contains default template. "
+                    "Run 'serendipity profile taste --edit' to customize it. Skipping for now."
                 ))
             else:
-                # Check preferences length
-                pref_words = storage.count_words(preferences)
-                if pref_words > 10000:
+                # Check taste length
+                taste_words = storage.count_words(taste)
+                if taste_words > 10000:
                     console.print(warning(
-                        f"Preferences file is {pref_words:,} words (>10K). "
+                        f"Taste profile is {taste_words:,} words (>10K). "
                         f"Consider condensing it for better results."
                     ))
-                context_augmentation = f"<persistent_preferences>\n{preferences}\n</persistent_preferences>"
+                context_augmentation = f"<persistent_taste>\n{taste}\n</persistent_taste>"
 
     if config.history_enabled and not no_history:
         history_context = storage.build_history_context(warn_callback=warn_long_context)
@@ -593,7 +640,8 @@ def discover_cmd(
             f"Model: {model}\n"
             f"Convergent: {n1}, Divergent: {n2}\n"
             f"History: {'enabled' if config.history_enabled and not no_history else 'disabled'}\n"
-            f"Preferences: {'included' if not no_preferences and storage.load_preferences().strip() else 'none'}",
+            f"Taste: {'included' if not no_taste and storage.load_taste().strip() else 'none'}\n"
+            f"Thinking: {max_thinking_tokens if max_thinking_tokens else 'disabled'}",
             title="Configuration",
             border_style="blue",
         ))
@@ -609,6 +657,7 @@ def discover_cmd(
         whorl=whorl,
         server_port=config.feedback_server_port,
         template_path=template_path,
+        max_thinking_tokens=max_thinking_tokens,
     )
 
     console.print("[bold green]Discovering...[/bold green]")
@@ -741,6 +790,8 @@ def config(
             value = value.lower() in ("true", "1", "yes")
         elif key in ("max_recent_history", "feedback_server_port", "default_n1", "default_n2"):
             value = int(value)
+        elif key == "max_thinking_tokens":
+            value = int(value) if value.lower() not in ("null", "none", "") else None
         elif key == "html_style" and value.lower() == "null":
             value = None
 
@@ -807,12 +858,12 @@ def config(
                     choices=["opus", "sonnet", "haiku"],
                     default=current_val,
                 ).ask()
-            elif selected in ("history_enabled", "summarize_old_history"):
+            elif selected in ("history_enabled",):
                 new_val = questionary.confirm(
                     f"{selected}?",
                     default=current_val,
                 ).ask()
-            elif selected in ("max_recent_history", "summary_threshold", "feedback_server_port", "default_n1", "default_n2"):
+            elif selected in ("max_recent_history", "feedback_server_port", "default_n1", "default_n2"):
                 new_val = questionary.text(
                     f"Enter value:",
                     default=str(current_val),
@@ -827,6 +878,16 @@ def config(
                 ).ask()
                 if new_val == "":
                     new_val = None
+            elif selected == "max_thinking_tokens":
+                new_val = questionary.text(
+                    "Enter token budget (empty to disable):",
+                    default=str(current_val) if current_val else "",
+                    validate=lambda x: x == "" or x.isdigit() or "Must be a number or empty",
+                ).ask()
+                if new_val == "" or new_val is None:
+                    new_val = None
+                else:
+                    new_val = int(new_val)
             else:
                 new_val = questionary.text(
                     f"Enter value:",
@@ -859,56 +920,56 @@ def config(
     console.print(f"\n[dim]Config file: {storage.config_path}[/dim]")
 
 
-@context_app.command()
-def preferences(
+@profile_app.command()
+def taste(
     show: bool = typer.Option(
         False,
         "--show",
-        help="Show current preferences",
+        help="Show current taste profile",
     ),
     edit: bool = typer.Option(
         False,
         "--edit",
-        help="Open preferences.md in $EDITOR",
+        help="Open taste.md in $EDITOR",
     ),
     clear: bool = typer.Option(
         False,
         "--clear",
-        help="Clear all preferences",
+        help="Clear taste profile",
     ),
 ) -> None:
-    """Manage your persistent taste profile.
+    """Manage your taste profile.
 
-    Your preferences describe your aesthetic sensibilities, interests, and
+    Your taste describes your aesthetic sensibilities, interests, and
     what kind of content you enjoy discovering.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity context preferences           [dim]# Show preferences[/dim]
-      [dim]$[/dim] serendipity context preferences --edit    [dim]# Edit in $EDITOR[/dim]
-      [dim]$[/dim] serendipity context preferences --clear   [dim]# Clear preferences[/dim]
+      [dim]$[/dim] serendipity profile taste           [dim]# Show taste[/dim]
+      [dim]$[/dim] serendipity profile taste --edit    [dim]# Edit in $EDITOR[/dim]
+      [dim]$[/dim] serendipity profile taste --clear   [dim]# Clear taste[/dim]
     """
     storage = StorageManager()
     storage.ensure_dirs()
 
-    prefs_path = storage.get_preferences_path()
+    taste_path = storage.get_taste_path()
 
     if clear:
-        if not typer.confirm("Clear all preferences? This cannot be undone."):
+        if not typer.confirm("Clear your taste profile? This cannot be undone."):
             console.print(warning("Cancelled"))
             return
-        if prefs_path.exists():
-            prefs_path.unlink()
-        console.print(success("Preferences cleared"))
+        if taste_path.exists():
+            taste_path.unlink()
+        console.print(success("Taste profile cleared"))
         return
 
     if edit:
         # Create file if it doesn't exist
-        if not prefs_path.exists():
-            prefs_path.parent.mkdir(parents=True, exist_ok=True)
-            prefs_path.write_text(
+        if not taste_path.exists():
+            taste_path.parent.mkdir(parents=True, exist_ok=True)
+            taste_path.write_text(
                 "# My Taste Profile\n\n"
                 "<!-- DELETE EVERYTHING ABOVE AND BELOW THIS LINE -->\n"
-                "<!-- Replace with your actual preferences -->\n\n"
+                "<!-- Replace with your actual taste -->\n\n"
                 "Describe your aesthetic preferences, interests, and what kind of content you enjoy.\n\n"
                 "Examples:\n"
                 "- I'm drawn to Japanese minimalism and wabi-sabi aesthetics\n"
@@ -918,20 +979,20 @@ def preferences(
             )
 
         editor = os.environ.get("EDITOR", "vim")
-        subprocess.run([editor, str(prefs_path)])
-        console.print(success(f"Preferences saved to {prefs_path}"))
+        subprocess.run([editor, str(taste_path)])
+        console.print(success(f"Taste profile saved to {taste_path}"))
         return
 
-    # Default: show preferences
-    prefs = storage.load_preferences()
-    if prefs.strip():
-        console.print(Panel(prefs, title="Preferences", border_style="blue"))
+    # Default: show taste
+    taste_content = storage.load_taste()
+    if taste_content.strip():
+        console.print(Panel(taste_content, title="Taste Profile", border_style="blue"))
     else:
-        console.print("[dim]No preferences set. Run 'serendipity context preferences --edit' to create.[/dim]")
-    console.print(f"\n[dim]Preferences file: {prefs_path}[/dim]")
+        console.print("[dim]No taste profile set. Run 'serendipity profile taste --edit' to create.[/dim]")
+    console.print(f"\n[dim]Taste file: {taste_path}[/dim]")
 
 
-@context_app.command()
+@profile_app.command()
 def history(
     show: bool = typer.Option(
         False,
@@ -963,12 +1024,12 @@ def history(
     """View and manage recommendation history.
 
     History tracks all recommendations shown to you, including feedback
-    (likes/dislikes) and whether rules have been extracted.
+    (likes/dislikes) and whether learnings have been extracted.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity context history                 [dim]# Show recent[/dim]
-      [dim]$[/dim] serendipity context history --liked         [dim]# Show liked only[/dim]
-      [dim]$[/dim] serendipity context history --clear         [dim]# Clear history[/dim]
+      [dim]$[/dim] serendipity profile history                 [dim]# Show recent[/dim]
+      [dim]$[/dim] serendipity profile history --liked         [dim]# Show liked only[/dim]
+      [dim]$[/dim] serendipity profile history --clear         [dim]# Clear history[/dim]
     """
     storage = StorageManager()
 
@@ -1011,80 +1072,80 @@ def history(
     console.print(f"\n[dim]History file: {storage.history_path}[/dim]")
 
 
-@context_app.command()
-def rules(
+@profile_app.command()
+def learnings(
     interactive: bool = typer.Option(
         False,
         "--interactive",
         "-i",
-        help="Interactive rule extraction wizard",
+        help="Interactive learning extraction wizard",
     ),
     show: bool = typer.Option(
         False,
         "--show",
-        help="Show current rules",
+        help="Show current learnings",
     ),
     edit: bool = typer.Option(
         False,
         "--edit",
-        help="Open rules.md in $EDITOR",
+        help="Open learnings.md in $EDITOR",
     ),
     clear: bool = typer.Option(
         False,
         "--clear",
-        help="Clear all rules",
+        help="Clear all learnings",
     ),
 ) -> None:
-    """Manage discovery rules extracted from likes/dislikes.
+    """Manage learnings extracted from your likes/dislikes.
 
-    Rules compress patterns from your feedback into concise preferences
+    Learnings compress patterns from your feedback into concise preferences
     that guide future recommendations more efficiently.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity context rules           [dim]# Show rules[/dim]
-      [dim]$[/dim] serendipity context rules -i        [dim]# Interactive wizard[/dim]
-      [dim]$[/dim] serendipity context rules --edit    [dim]# Edit in $EDITOR[/dim]
+      [dim]$[/dim] serendipity profile learnings           [dim]# Show learnings[/dim]
+      [dim]$[/dim] serendipity profile learnings -i        [dim]# Interactive wizard[/dim]
+      [dim]$[/dim] serendipity profile learnings --edit    [dim]# Edit in $EDITOR[/dim]
     """
     storage = StorageManager()
     storage.ensure_dirs()
 
     if clear:
-        if not typer.confirm("Clear all rules? This cannot be undone."):
+        if not typer.confirm("Clear all learnings? This cannot be undone."):
             console.print(warning("Cancelled"))
             return
-        storage.clear_rules()
-        console.print(success("Rules cleared"))
+        storage.clear_learnings()
+        console.print(success("Learnings cleared"))
         return
 
     if edit:
-        rules_path = storage.rules_path
-        if not rules_path.exists():
-            rules_path.write_text("# My Discovery Rules\n\n## Likes\n\n## Dislikes\n")
+        learnings_path = storage.learnings_path
+        if not learnings_path.exists():
+            learnings_path.write_text("# My Discovery Learnings\n\n## Likes\n\n## Dislikes\n")
         editor = os.environ.get("EDITOR", "vim")
-        subprocess.run([editor, str(rules_path)])
-        console.print(success(f"Rules saved to {rules_path}"))
+        subprocess.run([editor, str(learnings_path)])
+        console.print(success(f"Learnings saved to {learnings_path}"))
         return
 
     if interactive:
-        _rules_interactive_wizard(storage)
+        _learnings_interactive_wizard(storage)
         return
 
-    # Default: show rules
-    rules_content = storage.load_rules()
-    if rules_content.strip():
-        console.print(Panel(rules_content, title="Discovery Rules", border_style="blue"))
+    # Default: show learnings
+    learnings_content = storage.load_learnings()
+    if learnings_content.strip():
+        console.print(Panel(learnings_content, title="Discovery Learnings", border_style="blue"))
     else:
-        console.print("[dim]No rules defined yet. Run 'serendipity context rules -i' to extract from history.[/dim]")
-    console.print(f"\n[dim]Rules file: {storage.rules_path}[/dim]")
+        console.print("[dim]No learnings yet. Run 'serendipity profile learnings -i' to extract from history.[/dim]")
+    console.print(f"\n[dim]Learnings file: {storage.learnings_path}[/dim]")
 
 
-def _rules_interactive_wizard(storage: StorageManager) -> None:
-    """Interactive wizard for rule extraction."""
+def _learnings_interactive_wizard(storage: StorageManager) -> None:
+    """Interactive wizard for learning extraction."""
     from serendipity.search import HistorySearcher
 
     console.print(Panel(
-        "Extract patterns from your likes/dislikes into reusable rules",
-        title="Rule Extraction Wizard",
+        "Extract patterns from your likes/dislikes into reusable learnings",
+        title="Learning Extraction Wizard",
         border_style="blue",
     ))
 
@@ -1093,15 +1154,15 @@ def _rules_interactive_wizard(storage: StorageManager) -> None:
         "What would you like to do?",
         choices=[
             questionary.Choice(
-                "Extract rules from likes/dislikes (Claude proposes)",
+                "Extract learnings from likes/dislikes (Claude proposes)",
                 value="extract",
             ),
             questionary.Choice(
-                "Write a rule and auto-tag matching items",
+                "Write a learning and auto-tag matching items",
                 value="write",
             ),
             questionary.Choice(
-                "View/edit existing rules",
+                "View/edit existing learnings",
                 value="view",
             ),
             questionary.Choice(
@@ -1116,26 +1177,26 @@ def _rules_interactive_wizard(storage: StorageManager) -> None:
         return
 
     if workflow == "view":
-        rules_content = storage.load_rules()
-        if rules_content.strip():
-            console.print(Panel(rules_content, title="Current Rules", border_style="blue"))
+        learnings_content = storage.load_learnings()
+        if learnings_content.strip():
+            console.print(Panel(learnings_content, title="Current Learnings", border_style="blue"))
         else:
-            console.print("[dim]No rules yet.[/dim]")
-        if questionary.confirm("Edit rules in $EDITOR?", default=False).ask():
+            console.print("[dim]No learnings yet.[/dim]")
+        if questionary.confirm("Edit learnings in $EDITOR?", default=False).ask():
             editor = os.environ.get("EDITOR", "vim")
-            if not storage.rules_path.exists():
-                storage.rules_path.write_text("# My Discovery Rules\n\n## Likes\n\n## Dislikes\n")
-            subprocess.run([editor, str(storage.rules_path)])
+            if not storage.learnings_path.exists():
+                storage.learnings_path.write_text("# My Discovery Learnings\n\n## Likes\n\n## Dislikes\n")
+            subprocess.run([editor, str(storage.learnings_path)])
         return
 
     if workflow == "extract":
-        _extract_rule_workflow(storage)
+        _extract_learning_workflow(storage)
     elif workflow == "write":
-        _write_rule_workflow(storage)
+        _write_learning_workflow(storage)
 
 
-def _extract_rule_workflow(storage: StorageManager) -> None:
-    """Workflow: Claude proposes rules from selected items."""
+def _extract_learning_workflow(storage: StorageManager) -> None:
+    """Workflow: Claude proposes learnings from selected items."""
     from serendipity.rules import generate_rule
     from serendipity.search import HistorySearcher
 
@@ -1144,7 +1205,7 @@ def _extract_rule_workflow(storage: StorageManager) -> None:
     unextracted_disliked = storage.get_unextracted_entries("disliked")
 
     if not unextracted_liked and not unextracted_disliked:
-        console.print(warning("No unextracted items found. All your likes/dislikes are already in rules."))
+        console.print(warning("No unextracted items found. All your likes/dislikes are already in learnings."))
         return
 
     choices = []
@@ -1218,29 +1279,29 @@ def _extract_rule_workflow(storage: StorageManager) -> None:
 
         break
 
-    # Step 4: Generate rule with Claude
-    console.print(info(f"Generating rule from {len(selected)} items..."))
+    # Step 4: Generate learning with Claude
+    console.print(info(f"Generating learning from {len(selected)} items..."))
 
     try:
-        rule = asyncio.run(generate_rule(selected, feedback_type))
+        learning = asyncio.run(generate_rule(selected, feedback_type))
     except Exception as e:
-        console.print(error(f"Failed to generate rule: {e}"))
+        console.print(error(f"Failed to generate learning: {e}"))
         return
 
-    if not rule:
-        console.print(error("Failed to generate rule. Try selecting different items."))
+    if not learning:
+        console.print(error("Failed to generate learning. Try selecting different items."))
         return
 
     # Step 5: Show and confirm
     console.print()
     console.print(Panel(
-        f"### {rule.title}\n{rule.content}",
-        title="Proposed Rule",
+        f"### {learning.title}\n{learning.content}",
+        title="Proposed Learning",
         border_style="green",
     ))
 
     action = questionary.select(
-        "Accept this rule?",
+        "Accept this learning?",
         choices=[
             questionary.Choice("Accept and save", value="accept"),
             questionary.Choice("Edit before saving", value="edit"),
@@ -1253,66 +1314,66 @@ def _extract_rule_workflow(storage: StorageManager) -> None:
         return
 
     if action == "edit":
-        edited_title = questionary.text("Rule title:", default=rule.title).ask()
-        edited_content = questionary.text("Rule content:", default=rule.content).ask()
+        edited_title = questionary.text("Learning title:", default=learning.title).ask()
+        edited_content = questionary.text("Learning content:", default=learning.content).ask()
         if edited_title and edited_content:
-            rule.title = edited_title
-            rule.content = edited_content
+            learning.title = edited_title
+            learning.content = edited_content
 
-    # Save rule and mark items as extracted
-    storage.append_rule(rule.title, rule.content, rule.rule_type)
+    # Save learning and mark items as extracted
+    storage.append_learning(learning.title, learning.content, learning.rule_type)
     urls = [e.url for e in selected]
     count = storage.mark_extracted(urls)
 
-    console.print(success(f"Rule saved to {storage.rules_path}"))
+    console.print(success(f"Learning saved to {storage.learnings_path}"))
     console.print(success(f"Marked {count} items as extracted"))
 
 
-def _write_rule_workflow(storage: StorageManager) -> None:
-    """Workflow: User writes rule, Claude finds matching items."""
+def _write_learning_workflow(storage: StorageManager) -> None:
+    """Workflow: User writes learning, Claude finds matching items."""
     from serendipity.rules import find_matching_items
 
-    # Step 1: Get rule type
-    rule_type = questionary.select(
-        "What type of rule?",
+    # Step 1: Get learning type
+    learning_type = questionary.select(
+        "What type of learning?",
         choices=[
             questionary.Choice("Like (things I enjoy)", value="like"),
             questionary.Choice("Dislike (things to avoid)", value="dislike"),
         ],
     ).ask()
 
-    if rule_type is None:
+    if learning_type is None:
         console.print(warning("Cancelled"))
         return
 
-    # Step 2: Get rule text
+    # Step 2: Get learning text
     console.print("\n[dim]Write a description of the pattern (can be a few sentences):[/dim]")
-    rule_text = questionary.text(
-        "Rule:",
+    learning_text = questionary.text(
+        "Learning:",
         multiline=False,
     ).ask()
 
-    if not rule_text or not rule_text.strip():
+    if not learning_text or not learning_text.strip():
         console.print(warning("Cancelled"))
         return
 
     # Step 3: Find matching items
-    feedback = "liked" if rule_type == "like" else "disliked"
+    feedback = "liked" if learning_type == "like" else "disliked"
     entries = storage.get_unextracted_entries(feedback)
 
     if not entries:
         console.print(warning(f"No unextracted {feedback} items to match against."))
-        # Still save the rule
-        title = questionary.text("Rule title (short):", default="").ask()
+        # Still save the learning
+        title = questionary.text("Learning title (short):", default="").ask()
         if title:
-            storage.append_rule(title, rule_text.strip(), rule_type)
-            console.print(success("Rule saved (no items to mark as extracted)"))
+            storage.append_learning(title, learning_text.strip(), learning_type)
+            console.print(success("Learning saved (no items to mark as extracted)"))
         return
 
     console.print(info(f"Finding matching items among {len(entries)} {feedback} entries..."))
 
     try:
-        matching_urls = asyncio.run(find_matching_items(rule_text, entries))
+        matching_urls = asyncio.run(find_matching_items(learning_text, entries))
     except Exception as e:
         console.print(error(f"Failed to find matches: {e}"))
         matching_urls = []
@@ -1329,7 +1390,7 @@ def _write_rule_workflow(storage: StorageManager) -> None:
             "Confirm these items as extracted?",
             choices=[
                 questionary.Choice("Yes, mark all as extracted", value="yes"),
-                questionary.Choice("No, save rule without marking", value="no"),
+                questionary.Choice("No, save learning without marking", value="no"),
                 questionary.Choice("Cancel", value="cancel"),
             ],
         ).ask()
@@ -1345,7 +1406,7 @@ def _write_rule_workflow(storage: StorageManager) -> None:
 
     # Step 4: Get title and save
     title = questionary.text(
-        "Rule title (short):",
+        "Learning title (short):",
         default="",
     ).ask()
 
@@ -1353,8 +1414,8 @@ def _write_rule_workflow(storage: StorageManager) -> None:
         console.print(warning("Cancelled - no title provided"))
         return
 
-    storage.append_rule(title, rule_text.strip(), rule_type)
-    console.print(success(f"Rule saved to {storage.rules_path}"))
+    storage.append_learning(title, learning_text.strip(), learning_type)
+    console.print(success(f"Learning saved to {storage.learnings_path}"))
 
     if mark_items and matching_urls:
         count = storage.mark_extracted(matching_urls)

@@ -194,6 +194,7 @@ class SerendipityAgent:
         whorl: bool = False,
         server_port: int = 9876,
         template_path: Optional[Path] = None,
+        max_thinking_tokens: Optional[int] = None,
     ):
         """Initialize the Serendipity agent.
 
@@ -204,12 +205,14 @@ class SerendipityAgent:
             whorl: Enable Whorl integration for personalized context
             server_port: Port for the feedback server
             template_path: Path to HTML template (defaults to package template)
+            max_thinking_tokens: Max tokens for extended thinking (None=disabled)
         """
         self.console = console or Console()
         self.model = model
         self.verbose = verbose
         self.whorl = whorl
         self.server_port = server_port
+        self.max_thinking_tokens = max_thinking_tokens
         self.prompt_template = get_discovery_prompt()
         # Use provided template path or fall back to package default
         if template_path:
@@ -313,6 +316,7 @@ class SerendipityAgent:
             max_turns=50,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers if mcp_servers else None,
+            max_thinking_tokens=self.max_thinking_tokens,
         )
 
         response_text = []
@@ -485,6 +489,7 @@ Output as JSON:
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers if mcp_servers else None,
             resume=session_id,  # Resume the previous session
+            max_thinking_tokens=self.max_thinking_tokens,
         )
 
         response_text = []

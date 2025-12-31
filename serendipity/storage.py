@@ -12,7 +12,7 @@ from typing import Any, Optional
 class Config:
     """Serendipity configuration."""
 
-    preferences_path: str = "~/.serendipity/preferences.md"
+    taste_path: str = "~/.serendipity/taste.md"
     template_path: str = "~/.serendipity/template.html"
     history_enabled: bool = True
     max_recent_history: int = 20
@@ -21,11 +21,12 @@ class Config:
     default_n1: int = 5
     default_n2: int = 5
     html_style: Optional[str] = None
+    max_thinking_tokens: Optional[int] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
-            "preferences_path": self.preferences_path,
+            "taste_path": self.taste_path,
             "template_path": self.template_path,
             "history_enabled": self.history_enabled,
             "max_recent_history": self.max_recent_history,
@@ -34,13 +35,16 @@ class Config:
             "default_n1": self.default_n1,
             "default_n2": self.default_n2,
             "html_style": self.html_style,
+            "max_thinking_tokens": self.max_thinking_tokens,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
         """Create from dictionary."""
+        # Handle migration from old config key
+        taste_path = data.get("taste_path") or data.get("preferences_path", "~/.serendipity/taste.md")
         return cls(
-            preferences_path=data.get("preferences_path", "~/.serendipity/preferences.md"),
+            taste_path=taste_path,
             template_path=data.get("template_path", "~/.serendipity/template.html"),
             history_enabled=data.get("history_enabled", True),
             max_recent_history=data.get("max_recent_history", 20),
@@ -49,6 +53,7 @@ class Config:
             default_n1=data.get("default_n1", 5),
             default_n2=data.get("default_n2", 5),
             html_style=data.get("html_style"),
+            max_thinking_tokens=data.get("max_thinking_tokens"),
         )
 
 
@@ -111,17 +116,17 @@ class StorageManager:
         return self.base_dir / "history.jsonl"
 
     @property
-    def rules_path(self) -> Path:
-        return self.base_dir / "rules.md"
+    def learnings_path(self) -> Path:
+        return self.base_dir / "learnings.md"
 
     @property
     def output_dir(self) -> Path:
         return self.base_dir / "output"
 
-    def get_preferences_path(self) -> Path:
-        """Get preferences path, expanding ~ if needed."""
+    def get_taste_path(self) -> Path:
+        """Get taste profile path, expanding ~ if needed."""
         config = self.load_config()
-        return Path(config.preferences_path).expanduser()
+        return Path(config.taste_path).expanduser()
 
     def get_template_path(self, default_content: str) -> Path:
         """Get template path, writing default content on first use.
@@ -146,6 +151,46 @@ class StorageManager:
         """Ensure storage directories exist."""
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def migrate_if_needed(self) -> list[str]:
+        """Migrate old files to new names.
+
+        Returns:
+            List of migration messages (empty if no migrations needed).
+        """
+        migrations = []
+
+        # Migrate preferences.md → taste.md
+        old_prefs = self.base_dir / "preferences.md"
+        new_taste = self.base_dir / "taste.md"
+        if old_prefs.exists() and not new_taste.exists():
+            shutil.move(str(old_prefs), str(new_taste))
+            migrations.append(f"Migrated preferences.md → taste.md")
+
+        # Migrate rules.md → learnings.md
+        old_rules = self.base_dir / "rules.md"
+        new_learnings = self.base_dir / "learnings.md"
+        if old_rules.exists() and not new_learnings.exists():
+            shutil.move(str(old_rules), str(new_learnings))
+            migrations.append(f"Migrated rules.md → learnings.md")
+
+        # Update config if it has old preferences_path
+        if self.config_path.exists():
+            try:
+                data = json.loads(self.config_path.read_text())
+                if "preferences_path" in data and "taste_path" not in data:
+                    # Migrate the path, updating the filename
+                    old_path = data["preferences_path"]
+                    new_path = old_path.replace("preferences.md", "taste.md")
+                    data["taste_path"] = new_path
+                    del data["preferences_path"]
+                    self.config_path.write_text(json.dumps(data, indent=2))
+                    self._config = None  # Clear cached config
+                    migrations.append(f"Updated config: preferences_path → taste_path")
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        return migrations
 
     def load_config(self) -> Config:
         """Load configuration from file."""
@@ -176,42 +221,42 @@ class StorageManager:
         self.save_config(config)
         return config
 
-    def load_preferences(self) -> str:
-        """Load user preferences from file."""
-        path = self.get_preferences_path()
+    def load_taste(self) -> str:
+        """Load user taste profile from file."""
+        path = self.get_taste_path()
         if not path.exists():
             return ""
         return path.read_text()
 
-    # Rules management
+    # Learnings management (extracted patterns from feedback)
 
-    def load_rules(self) -> str:
-        """Load rules markdown."""
-        if not self.rules_path.exists():
+    def load_learnings(self) -> str:
+        """Load learnings markdown."""
+        if not self.learnings_path.exists():
             return ""
-        return self.rules_path.read_text()
+        return self.learnings_path.read_text()
 
-    def save_rules(self, content: str) -> None:
-        """Save rules markdown."""
+    def save_learnings(self, content: str) -> None:
+        """Save learnings markdown."""
         self.ensure_dirs()
-        self.rules_path.write_text(content)
+        self.learnings_path.write_text(content)
 
-    def append_rule(self, title: str, content: str, rule_type: str = "like") -> None:
-        """Append a new rule to rules.md.
+    def append_learning(self, title: str, content: str, learning_type: str = "like") -> None:
+        """Append a new learning to learnings.md.
 
         Args:
-            title: Rule title (will be ### heading)
-            content: Rule content (2-3 sentences)
-            rule_type: "like" or "dislike"
+            title: Learning title (will be ### heading)
+            content: Learning content (2-3 sentences)
+            learning_type: "like" or "dislike"
         """
-        existing = self.load_rules()
+        existing = self.load_learnings()
 
         # Initialize structure if empty
         if not existing.strip():
-            existing = "# My Discovery Rules\n\n## Likes\n\n## Dislikes\n"
+            existing = "# My Discovery Learnings\n\n## Likes\n\n## Dislikes\n"
 
-        section_header = "## Likes" if rule_type == "like" else "## Dislikes"
-        new_rule = f"\n### {title}\n{content}\n"
+        section_header = "## Likes" if learning_type == "like" else "## Dislikes"
+        new_learning = f"\n### {title}\n{content}\n"
 
         # Find the section and append
         if section_header in existing:
@@ -225,17 +270,17 @@ class StorageManager:
                 section_end = next_section
 
             # Insert before the next section (or at end)
-            updated = existing[:section_end].rstrip() + new_rule + existing[section_end:]
+            updated = existing[:section_end].rstrip() + new_learning + existing[section_end:]
         else:
             # Add the section if it doesn't exist
-            updated = existing.rstrip() + f"\n\n{section_header}\n{new_rule}"
+            updated = existing.rstrip() + f"\n\n{section_header}\n{new_learning}"
 
-        self.save_rules(updated)
+        self.save_learnings(updated)
 
-    def clear_rules(self) -> None:
-        """Clear all rules."""
-        if self.rules_path.exists():
-            self.rules_path.unlink()
+    def clear_learnings(self) -> None:
+        """Clear all learnings."""
+        if self.learnings_path.exists():
+            self.learnings_path.unlink()
 
     def mark_extracted(self, urls: list[str]) -> int:
         """Mark entries as extracted by URL.
@@ -375,7 +420,7 @@ class StorageManager:
                            Called with (message: str) when context is too long.
 
         Returns:
-            String with history context (rules, recent items, unextracted likes/dislikes).
+            String with history context (learnings, recent items, unextracted likes/dislikes).
         """
         config = self.load_config()
 
@@ -384,10 +429,10 @@ class StorageManager:
 
         history_parts = []
 
-        # 1. Discovery rules (compact, high signal - extracted patterns)
-        rules = self.load_rules()
-        if rules.strip():
-            history_parts.append(f"<discovery_rules>\n{rules}\n</discovery_rules>")
+        # 1. Discovery learnings (compact, high signal - extracted patterns)
+        learnings = self.load_learnings()
+        if learnings.strip():
+            history_parts.append(f"<discovery_learnings>\n{learnings}\n</discovery_learnings>")
 
         # 2. Recent entries (to avoid repeating) - include all, extracted or not
         recent = self.load_recent_history()
@@ -400,20 +445,20 @@ class StorageManager:
                 "Recently shown (do not repeat these URLs):\n" + "\n".join(recent_lines)
             )
 
-        # 3. Unextracted liked entries (not yet in rules)
+        # 3. Unextracted liked entries (not yet in learnings)
         unextracted_liked = self.get_unextracted_entries("liked")
         if unextracted_liked:
             liked_lines = [f"- {e.url} - \"{e.reason[:100]}...\"" for e in unextracted_liked]
             history_parts.append(
-                "Items you've liked (not yet in rules):\n" + "\n".join(liked_lines)
+                "Items you've liked (not yet in learnings):\n" + "\n".join(liked_lines)
             )
 
-        # 4. Unextracted disliked entries (not yet in rules)
+        # 4. Unextracted disliked entries (not yet in learnings)
         unextracted_disliked = self.get_unextracted_entries("disliked")
         if unextracted_disliked:
             disliked_lines = [f"- {e.url}" for e in unextracted_disliked]
             history_parts.append(
-                "Items you didn't like (not yet in rules):\n" + "\n".join(disliked_lines)
+                "Items you didn't like (not yet in learnings):\n" + "\n".join(disliked_lines)
             )
 
         if not history_parts:
@@ -426,8 +471,8 @@ class StorageManager:
         if word_count > 10000 and warn_callback:
             warn_callback(
                 f"History context is {word_count:,} words (>10K). "
-                f"Consider extracting rules with 'serendipity rules -i' "
-                f"or clearing old entries with 'serendipity history --clear'."
+                f"Consider extracting learnings with 'serendipity profile learnings -i' "
+                f"or clearing old entries with 'serendipity profile history --clear'."
             )
 
         return result
