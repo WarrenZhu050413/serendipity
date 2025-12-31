@@ -51,3 +51,21 @@ def get_frontend_design() -> str:
         return get_prompt("frontend_design.txt")
     except FileNotFoundError:
         return ""
+
+
+@lru_cache
+def get_default_config(name: str) -> str:
+    """Load a default config file from serendipity/config/defaults/.
+
+    Args:
+        name: Config filename (e.g., "types.yaml")
+
+    Returns:
+        Config content as string
+    """
+    return files("serendipity.config.defaults").joinpath(name).read_text()
+
+
+def get_default_types_yaml() -> str:
+    """Get the default types.yaml configuration."""
+    return get_default_config("types.yaml")

@@ -1,12 +1,16 @@
 """Lightweight feedback server for serendipity HTML interaction."""
 
 import asyncio
+import errno
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from aiohttp import web
+
+logger = logging.getLogger(__name__)
 
 from serendipity.storage import HistoryEntry, StorageManager
 
@@ -45,11 +49,18 @@ class FeedbackServer:
         # Session context storage for /context endpoint
         self.session_inputs: dict[str, str] = {}  # session_id -> user_input
 
-    async def start(self, port: int) -> None:
+    async def start(self, port: int, max_retries: int = 10) -> int:
         """Start the feedback server.
 
         Args:
-            port: Port to listen on
+            port: Preferred port to listen on
+            max_retries: Maximum number of ports to try if preferred port is taken
+
+        Returns:
+            The actual port the server is running on (may differ if preferred was taken)
+
+        Raises:
+            OSError: If no available port found after max_retries attempts
         """
         self._app = web.Application()
         self._app.router.add_post("/feedback", self._handle_feedback)
@@ -69,14 +80,42 @@ class FeedbackServer:
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, "localhost", port)
-        await self._site.start()
+
+        # Try binding to port, incrementing if taken
+        actual_port = port
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                self._site = web.TCPSite(self._runner, "localhost", actual_port)
+                await self._site.start()
+                if actual_port != port:
+                    logger.warning(
+                        f"Port {port} was in use, using port {actual_port} instead"
+                    )
+                self._actual_port = actual_port
+                break
+            except OSError as e:
+                # errno 48 is EADDRINUSE on macOS, 98 on Linux
+                if e.errno in (errno.EADDRINUSE, 48, 98):
+                    last_error = e
+                    actual_port = port + attempt + 1
+                else:
+                    raise
+        else:
+            # Exhausted all retries
+            await self._runner.cleanup()
+            raise OSError(
+                f"Could not find available port after {max_retries} attempts "
+                f"(tried {port}-{port + max_retries - 1}). Last error: {last_error}"
+            )
 
         self._running = True
         self._last_activity = datetime.now()
 
         # Start idle timeout checker
         self._shutdown_task = asyncio.create_task(self._idle_shutdown_check())
+
+        return actual_port
 
     async def stop(self) -> None:
         """Stop the feedback server."""
@@ -137,8 +176,8 @@ class FeedbackServer:
         self._update_activity()
         session_id = request.query.get("session_id", "")
 
-        # Load rules
-        rules = self.storage.load_rules()
+        # Load learnings
+        rules = self.storage.load_learnings()
 
         # Load recent history (last 20 items)
         recent_history = self.storage.load_recent_history(20)

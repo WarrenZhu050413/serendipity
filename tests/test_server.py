@@ -134,8 +134,8 @@ class TestFeedbackServerContextEndpoint:
 
     @pytest.mark.asyncio
     async def test_context_returns_rules(self, storage):
-        """Test that /context returns rules content."""
-        storage.save_rules("# My Rules\n\n## Likes\n\n### Deep content\nI like deep dives")
+        """Test that /context returns learnings content."""
+        storage.save_learnings("# My Rules\n\n## Likes\n\n### Deep content\nI like deep dives")
 
         server = FeedbackServer(storage=storage)
 

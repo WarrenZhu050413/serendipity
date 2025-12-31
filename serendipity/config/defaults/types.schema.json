@@ -1,0 +1,269 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/serendipity/types.schema.json",
+  "title": "Serendipity Types Configuration",
+  "description": "Configuration for recommendation types (approaches × media) and context sources",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "description": "Configuration schema version",
+      "default": 2
+    },
+    "total_count": {
+      "type": "integer",
+      "description": "Total number of recommendations per discovery",
+      "default": 10
+    },
+    "agent_mode": {
+      "type": "string",
+      "enum": ["autonomous", "strict"],
+      "description": "How strictly the agent follows the distribution",
+      "default": "autonomous"
+    },
+    "approaches": {
+      "type": "object",
+      "description": "How to find recommendations",
+      "additionalProperties": {
+        "$ref": "#/definitions/ApproachType"
+      }
+    },
+    "media": {
+      "type": "object",
+      "description": "What format of content to recommend",
+      "additionalProperties": {
+        "$ref": "#/definitions/MediaType"
+      }
+    },
+    "context_sources": {
+      "type": "object",
+      "description": "Sources of user context/profile information",
+      "additionalProperties": {
+        "$ref": "#/definitions/ContextSource"
+      }
+    },
+    "overrides": {
+      "type": "object",
+      "description": "Override weights for specific approach×media combinations"
+    }
+  },
+  "definitions": {
+    "ApproachType": {
+      "type": "object",
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable name"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this approach means"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Relative weight (0-1)",
+          "default": 0.5
+        },
+        "count": {
+          "type": "integer",
+          "description": "Hard limit (overrides weight)"
+        },
+        "prompt_hint": {
+          "type": "string",
+          "description": "Instructions for Claude about this approach"
+        }
+      },
+      "required": ["display_name", "description"]
+    },
+    "MediaType": {
+      "type": "object",
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.2
+        },
+        "count": {
+          "type": "integer"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Source"
+          }
+        },
+        "prompt_hint": {
+          "type": "string"
+        },
+        "metadata_schema": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MetadataField"
+          }
+        }
+      },
+      "required": ["display_name", "description"]
+    },
+    "Source": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string",
+          "description": "Tool name (WebSearch, WebFetch, or mcp__server__tool)"
+        },
+        "hints": {
+          "type": "string",
+          "description": "Search hints with {query} placeholder"
+        }
+      },
+      "required": ["tool"]
+    },
+    "MetadataField": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": ["name"]
+    },
+    "ContextSource": {
+      "type": "object",
+      "oneOf": [
+        { "$ref": "#/definitions/LoaderSource" },
+        { "$ref": "#/definitions/MCPSource" }
+      ]
+    },
+    "LoaderSource": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "loader"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "description": {
+          "type": "string"
+        },
+        "loader": {
+          "type": "string",
+          "description": "Python module path to loader function",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$"
+        },
+        "prompt_hint": {
+          "type": "string",
+          "description": "Template with {content} placeholder"
+        },
+        "options": {
+          "type": "object",
+          "description": "Options passed to the loader function"
+        }
+      },
+      "required": ["type", "loader"]
+    },
+    "MCPSource": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "mcp"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "description": {
+          "type": "string"
+        },
+        "server": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "MCP server URL (can use {port} placeholder)"
+            },
+            "type": {
+              "type": "string",
+              "enum": ["http", "stdio"]
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "required": ["url", "type"]
+        },
+        "health_check": {
+          "type": "object",
+          "properties": {
+            "endpoint": { "type": "string" },
+            "timeout": { "type": "number" }
+          }
+        },
+        "setup": {
+          "type": "object",
+          "properties": {
+            "cli_command": { "type": "string" },
+            "install_hint": { "type": "string" },
+            "home_dir": { "type": "string" },
+            "docs_dir": { "type": "string" }
+          }
+        },
+        "port": {
+          "type": "object",
+          "properties": {
+            "default": { "type": "integer" },
+            "max_retries": { "type": "integer" }
+          }
+        },
+        "auto_start": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "command": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "log_path": { "type": "string" }
+          }
+        },
+        "tools": {
+          "type": "object",
+          "properties": {
+            "allowed": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "system_prompt_hint": {
+          "type": "string",
+          "description": "Instructions for Claude about using this MCP server"
+        }
+      },
+      "required": ["type", "server"]
+    }
+  }
+}

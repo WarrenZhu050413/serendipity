@@ -18,6 +18,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from serendipity.agent import Recommendation, SerendipityAgent
+from serendipity.config.types import TypesConfig
+from serendipity.context_sources import ContextSourceManager
+from serendipity.prompts.builder import PromptBuilder
 from serendipity.resources import get_base_template
 
 # Config setting descriptions
@@ -74,7 +77,8 @@ def callback(ctx: typer.Context) -> None:
             verbose=False,
             no_history=False,
             no_taste=False,
-            whorl=False,
+            enable_source=None,
+            disable_source=None,
             thinking=None,
         )
 
@@ -361,9 +365,18 @@ def _start_feedback_server(
     static_dir: Optional[Path] = None,
     user_input: Optional[str] = None,
     session_id: Optional[str] = None,
-) -> None:
-    """Start the feedback server in a background thread."""
+) -> tuple[threading.Thread, int]:
+    """Start the feedback server in a background thread.
+
+    Returns:
+        Tuple of (thread, actual_port) where actual_port may differ from port if it was taken.
+    """
+    import queue
+
     from serendipity.server import FeedbackServer
+
+    # Queue to communicate actual port back from thread
+    port_queue: queue.Queue[int | Exception] = queue.Queue()
 
     # Store reference to server for registering session input
     server_ref = [None]
@@ -411,7 +424,9 @@ def _start_feedback_server(
         if session_id and user_input:
             server.register_session_input(session_id, user_input)
 
-        await server.start(port)
+        # Start server and get actual port (may differ if preferred was taken)
+        actual_port = await server.start(port)
+        port_queue.put(actual_port)
 
         # Keep running until interrupted
         try:
@@ -429,27 +444,38 @@ def _start_feedback_server(
             pass
         except Exception as e:
             import traceback
+            port_queue.put(e)  # Signal error to main thread
             console.print(f"[red]Feedback server error: {e}[/red]")
             traceback.print_exc()
 
     thread = threading.Thread(target=thread_target, daemon=True)
     thread.start()
 
-    # Wait for server to be ready
-    import urllib.request
+    # Wait for actual port from server thread
     import time
+    try:
+        result = port_queue.get(timeout=5.0)
+        if isinstance(result, Exception):
+            raise result
+        actual_port = result
+    except queue.Empty:
+        console.print("[yellow]Warning: Feedback server may not be ready[/yellow]")
+        actual_port = port  # Fall back to requested port
+
+    # Verify server is responding on actual port
+    import urllib.request
     for _ in range(10):  # Try for up to 1 second
         try:
-            req = urllib.request.Request(f"http://localhost:{port}/health")
+            req = urllib.request.Request(f"http://localhost:{actual_port}/health")
             with urllib.request.urlopen(req, timeout=1) as resp:
                 if resp.status == 200:
                     break
         except Exception:
             time.sleep(0.1)
     else:
-        console.print("[yellow]Warning: Feedback server may not be ready[/yellow]")
+        console.print("[yellow]Warning: Feedback server health check failed[/yellow]")
 
-    return thread
+    return thread, actual_port
 
 
 @app.command(name="discover")
@@ -508,11 +534,16 @@ def discover_cmd(
         "--no-taste",
         help="Don't include taste profile for this run",
     ),
-    whorl: bool = typer.Option(
-        False,
-        "--whorl",
-        "-w",
-        help="Enable Whorl integration (search personal knowledge base for context)",
+    enable_source: Optional[list[str]] = typer.Option(
+        None,
+        "--enable-source",
+        "-s",
+        help="Enable a context source (can repeat: -s whorl -s custom). Available: taste, learnings, history, style_guidance, whorl",
+    ),
+    disable_source: Optional[list[str]] = typer.Option(
+        None,
+        "--disable-source",
+        help="Disable a context source (can repeat)",
     ),
     thinking: Optional[int] = typer.Option(
         None,
@@ -531,7 +562,7 @@ def discover_cmd(
       [dim]$[/dim] serendipity -i                        [dim]# Open editor[/dim]
       [dim]$[/dim] serendipity --n1 3 --n2 8             [dim]# Custom counts[/dim]
       [dim]$[/dim] serendipity -o terminal               [dim]# No browser[/dim]
-      [dim]$[/dim] serendipity -w                        [dim]# With Whorl knowledge base[/dim]
+      [dim]$[/dim] serendipity -s whorl                    [dim]# With Whorl knowledge base[/dim]
     """
     # Load storage and config
     storage = StorageManager()
@@ -588,42 +619,47 @@ def discover_cmd(
         console.print("[dim]No input provided - running in 'surprise me' mode[/dim]")
         console.print()
 
-    # Build context augmentation
-    context_augmentation = ""
+    # Load types config for context sources
+    types_config = TypesConfig.from_yaml(storage.base_dir / "types.yaml")
+
+    # Create context source manager
+    ctx_manager = ContextSourceManager(types_config, console)
+
+    # Build enable/disable lists from flags
+    sources_to_enable = list(enable_source) if enable_source else []
+    sources_to_disable = list(disable_source) if disable_source else []
+
+    # Handle backwards-compatible --no-taste and --no-history flags
+    if no_taste:
+        sources_to_disable.append("taste")
+    if no_history:
+        sources_to_disable.extend(["history", "learnings"])
+
+    # Initialize sources (checks setup, starts MCP servers)
+    init_warnings = asyncio.get_event_loop().run_until_complete(
+        ctx_manager.initialize(
+            enable_sources=sources_to_enable,
+            disable_sources=sources_to_disable,
+        )
+    )
+    for warn_msg in init_warnings:
+        console.print(warning(warn_msg))
+
+    # Build context from all enabled sources
+    context_augmentation, load_warnings = asyncio.get_event_loop().run_until_complete(
+        ctx_manager.build_context(storage)
+    )
+    for warn_msg in load_warnings:
+        console.print(warning(warn_msg))
+
+    # Extract style_guidance from context (it's now part of the unified system)
+    # For backwards compatibility, we pass it separately to agent
     style_guidance = ""
-
-    # Warning callback for long context
-    def warn_long_context(msg: str) -> None:
-        console.print(warning(msg))
-
-    if not no_taste:
-        taste = storage.load_taste()
-        if taste.strip():
-            # Check if it's still the default template (not customized)
-            if "Describe your aesthetic preferences" in taste and "Examples:" in taste:
-                console.print(warning(
-                    "Taste profile contains default template. "
-                    "Run 'serendipity profile taste --edit' to customize it. Skipping for now."
-                ))
-            else:
-                # Check taste length
-                taste_words = storage.count_words(taste)
-                if taste_words > 10000:
-                    console.print(warning(
-                        f"Taste profile is {taste_words:,} words (>10K). "
-                        f"Consider condensing it for better results."
-                    ))
-                context_augmentation = f"<persistent_taste>\n{taste}\n</persistent_taste>"
-
-    if config.history_enabled and not no_history:
-        history_context = storage.build_history_context(warn_callback=warn_long_context)
-        if history_context:
-            if context_augmentation:
-                context_augmentation += "\n\n" + history_context
-            else:
-                context_augmentation = history_context
-
-    style_guidance = storage.build_style_guidance()
+    if "style_guidance" in ctx_manager.sources and ctx_manager.sources["style_guidance"].enabled:
+        style_result = asyncio.get_event_loop().run_until_complete(
+            ctx_manager.sources["style_guidance"].load(storage)
+        )
+        style_guidance = style_result.prompt_section
 
     # Check total context length
     total_context = context_augmentation + "\n\n" + context
@@ -635,12 +671,13 @@ def discover_cmd(
         ))
 
     if verbose:
+        enabled_sources = ctx_manager.get_enabled_source_names()
         console.print(Panel(
             f"Context length: {len(context)} chars\n"
             f"Model: {model}\n"
             f"Convergent: {n1}, Divergent: {n2}\n"
-            f"History: {'enabled' if config.history_enabled and not no_history else 'disabled'}\n"
-            f"Taste: {'included' if not no_taste and storage.load_taste().strip() else 'none'}\n"
+            f"Context sources: {', '.join(enabled_sources) if enabled_sources else 'none'}\n"
+            f"MCP servers: {', '.join(ctx_manager.get_mcp_servers().keys()) or 'none'}\n"
             f"Thinking: {max_thinking_tokens if max_thinking_tokens else 'disabled'}",
             title="Configuration",
             border_style="blue",
@@ -654,7 +691,7 @@ def discover_cmd(
         console=console,
         model=model,
         verbose=verbose,
-        whorl=whorl,
+        context_manager=ctx_manager,
         server_port=config.feedback_server_port,
         template_path=template_path,
         max_thinking_tokens=max_thinking_tokens,
@@ -684,7 +721,7 @@ def discover_cmd(
             raise typer.Exit(code=1)
 
         # Start feedback server with static file serving
-        _start_feedback_server(
+        _, actual_port = _start_feedback_server(
             storage,
             agent,
             config.feedback_server_port,
@@ -693,15 +730,17 @@ def discover_cmd(
             session_id=result.session_id,
         )
 
-        # Open browser to the specific file
+        # Open browser to the specific file (use actual port which may differ if preferred was taken)
         import webbrowser
         filename = result.html_path.name
-        url = f"http://localhost:{config.feedback_server_port}/{filename}"
+        url = f"http://localhost:{actual_port}/{filename}"
         webbrowser.open(url)
 
         console.print(success(f"Opened in browser: {url}"))
         console.print(f"[dim]HTML file: {result.html_path}[/dim]")
-        console.print(f"[dim]Feedback server running on localhost:{config.feedback_server_port}[/dim]")
+        if actual_port != config.feedback_server_port:
+            console.print(f"[yellow]Port {config.feedback_server_port} was in use, using port {actual_port}[/yellow]")
+        console.print(f"[dim]Feedback server running on localhost:{actual_port}[/dim]")
         console.print("[dim]Press Ctrl+C to stop the server when done.[/dim]")
 
         # Keep main thread alive for feedback server
@@ -918,6 +957,204 @@ def config(
 
     console.print(table)
     console.print(f"\n[dim]Config file: {storage.config_path}[/dim]")
+
+
+@app.command()
+def types(
+    show: bool = typer.Option(
+        True,
+        "--show",
+        "-s",
+        help="Show available recommendation types",
+    ),
+    edit: bool = typer.Option(
+        False,
+        "--edit",
+        "-e",
+        help="Open types.yaml in $EDITOR",
+    ),
+    preview: bool = typer.Option(
+        False,
+        "--preview",
+        "-p",
+        help="Preview the prompt that would be generated from types config",
+    ),
+    reset: bool = typer.Option(
+        False,
+        "--reset",
+        "-r",
+        help="Reset types.yaml to defaults (overwrites current config)",
+    ),
+) -> None:
+    """Manage recommendation types (approaches × media).
+
+    Configure how recommendations are found (approaches: convergent, divergent, etc.)
+    and what formats are recommended (media: youtube, book, article, etc.).
+
+    EXAMPLES:
+    $ serendipity types                # Show current configuration
+    $ serendipity types --edit         # Edit in $EDITOR
+    $ serendipity types --reset        # Restore defaults
+    """
+    console = Console()
+    storage = StorageManager()
+    types_path = storage.base_dir / "types.yaml"
+
+    if reset:
+        # Confirm before overwriting
+        if types_path.exists():
+            console.print(f"[yellow]This will overwrite {types_path}[/yellow]")
+            if not questionary.confirm("Reset to defaults?", default=False).ask():
+                console.print("[dim]Cancelled.[/dim]")
+                return
+        TypesConfig.reset(types_path)
+        console.print(f"[green]Reset types.yaml to defaults.[/green]")
+        console.print(f"[dim]{types_path}[/dim]")
+        return
+
+    if edit:
+        # Open in editor (auto-creates if missing via from_yaml)
+        editor = os.environ.get("EDITOR", "vim")
+        TypesConfig.from_yaml(types_path)  # Ensure file exists
+        subprocess.run([editor, str(types_path)])
+        return
+
+    if preview:
+        # Show the prompt that would be generated
+        config = TypesConfig.from_yaml(types_path)
+        builder = PromptBuilder(config)
+        console.print(Panel(
+            builder.build_type_guidance(),
+            title="Generated Prompt Sections",
+            border_style="dim",
+        ))
+        return
+
+    # Default: show types
+    config = TypesConfig.from_yaml(types_path)
+
+    # Show approaches
+    console.print("\n[bold]Approaches[/bold] (how to find):")
+    for approach in config.get_enabled_approaches():
+        weight_str = f"{approach.weight:.0%}" if approach.count is None else f"{approach.count} items"
+        console.print(f"  [cyan]{approach.name}[/cyan]: {approach.display_name} ({weight_str})")
+
+    # Show media types
+    console.print("\n[bold]Media Types[/bold] (what format):")
+    for media in config.get_enabled_media():
+        weight_str = f"{media.weight:.0%}" if media.count is None else f"{media.count} items"
+        console.print(f"  [green]{media.name}[/green]: {media.display_name} ({weight_str})")
+
+    # Show distribution
+    console.print(f"\n[bold]Distribution[/bold] (total: {config.total_count}):")
+    matrix = config.calculate_distribution()
+    for approach_name, media_counts in matrix.items():
+        items = [f"{m}: ~{c:.0f}" for m, c in media_counts.items()]
+        console.print(f"  [dim]{approach_name}[/dim]: {', '.join(items)}")
+
+    # Show context sources
+    if config.context_sources:
+        console.print("\n[bold]Context Sources[/bold] (user profile):")
+        for name, source in config.context_sources.items():
+            status = "[green]enabled[/green]" if source.enabled else "[dim]disabled[/dim]"
+            source_type = f"[dim]{source.type}[/dim]"
+            desc = f" - {source.description}" if source.description else ""
+            console.print(f"  [yellow]{name}[/yellow]: {status} ({source_type}){desc}")
+
+    if types_path.exists():
+        console.print(f"\n[dim]Config: {types_path}[/dim]")
+    else:
+        console.print(f"\n[dim]Using defaults. Run 'serendipity types --edit' to customize.[/dim]")
+
+
+@app.command()
+def sources(
+    show: bool = typer.Option(
+        True,
+        "--show",
+        "-s",
+        help="Show available context sources",
+    ),
+    enable: Optional[str] = typer.Option(
+        None,
+        "--enable",
+        "-e",
+        help="Enable a context source by name",
+    ),
+    disable: Optional[str] = typer.Option(
+        None,
+        "--disable",
+        "-d",
+        help="Disable a context source by name",
+    ),
+) -> None:
+    """Manage context sources (user profile/preferences).
+
+    Context sources provide information about you to Claude:
+    - Loaders: Read from files (taste.md, learnings.md, history)
+    - MCP: Connect to external services (Whorl knowledge base)
+
+    EXAMPLES:
+    $ serendipity sources                  # Show all sources
+    $ serendipity sources --enable whorl   # Enable whorl in config
+    $ serendipity sources --disable history  # Disable history in config
+    """
+    import yaml
+
+    console = Console()
+    storage = StorageManager()
+    types_path = storage.base_dir / "types.yaml"
+
+    # Load config
+    config = TypesConfig.from_yaml(types_path)
+
+    if enable or disable:
+        # Modify the YAML file directly
+        if not types_path.exists():
+            # Create default config first
+            TypesConfig.write_defaults(types_path)
+
+        # Load and modify YAML
+        yaml_content = types_path.read_text()
+        data = yaml.safe_load(yaml_content) or {}
+
+        if "context_sources" not in data:
+            data["context_sources"] = {}
+
+        source_name = enable or disable
+        if source_name not in config.context_sources:
+            console.print(f"[red]Error:[/red] Unknown source '{source_name}'")
+            console.print(f"[dim]Available sources: {', '.join(config.context_sources.keys())}[/dim]")
+            raise typer.Exit(1)
+
+        if source_name not in data["context_sources"]:
+            # Copy from defaults
+            source_config = config.context_sources[source_name]
+            data["context_sources"][source_name] = source_config.raw_config.copy()
+
+        data["context_sources"][source_name]["enabled"] = bool(enable)
+
+        # Write back
+        types_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+        action = "Enabled" if enable else "Disabled"
+        console.print(f"[green]{action} '{source_name}'[/green] in {types_path}")
+        return
+
+    # Default: show sources
+    console.print("\n[bold]Context Sources[/bold]")
+    console.print("[dim]These provide information about you to Claude.[/dim]\n")
+
+    for name, source in config.context_sources.items():
+        status = "[green]●[/green] enabled" if source.enabled else "[dim]○[/dim] disabled"
+        source_type = f"[cyan]{source.type}[/cyan]"
+        console.print(f"  {status}  [bold]{name}[/bold] ({source_type})")
+        if source.description:
+            console.print(f"           [dim]{source.description}[/dim]")
+
+    console.print(f"\n[dim]Enable at runtime: serendipity discover -s <name>[/dim]")
+    console.print(f"[dim]Enable permanently: serendipity sources --enable <name>[/dim]")
+    console.print(f"[dim]Edit config: serendipity types --edit[/dim]")
 
 
 @profile_app.command()

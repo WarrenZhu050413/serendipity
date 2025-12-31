@@ -1,0 +1,185 @@
+# yaml-language-server: $schema=./types.schema.json
+# Serendipity Configuration
+# -------------------------
+# Two dimensions: approaches (how to find) × media (what format)
+# Plus context_sources for user profile/context
+#
+# Schema: serendipity/config/defaults/types.schema.json
+# To restore defaults: serendipity types --reset
+
+version: 2
+total_count: 10
+agent_mode: autonomous  # "autonomous" or "strict"
+
+# APPROACHES - How to find recommendations
+approaches:
+  convergent:
+    display_name: "More Like This"
+    description: "Content that directly matches your stated taste"
+    enabled: true
+    weight: 0.5
+    prompt_hint: |
+      For CONVERGENT recommendations:
+      - Match their explicit interests directly
+      - Find content from sources they already follow or would recognize
+      - Prioritize quality and relevance over novelty
+      - These should feel like "of course I'd love this"
+
+  divergent:
+    display_name: "Expand Your Palette"
+    description: "Surprising content that shares underlying qualities"
+    enabled: true
+    weight: 0.5
+    prompt_hint: |
+      For DIVERGENT recommendations:
+      - Find content that shares UNDERLYING qualities, not surface features
+      - Cross genre/medium boundaries
+      - Look for unexpected connections and lateral moves
+      - These should feel like "I never knew I needed this"
+
+# MEDIA - What format of content to recommend
+media:
+  article:
+    display_name: "Articles & Essays"
+    description: "Long-form written content"
+    enabled: true
+    weight: 0.35
+    sources:
+      - tool: WebSearch
+        hints: "{query} essay OR article OR longread"
+    prompt_hint: "Prioritize long-form over listicles. Quality publications and personal blogs with voice."
+
+  youtube:
+    display_name: "YouTube Videos"
+    description: "Video content for learning or entertainment"
+    enabled: true
+    weight: 0.25
+    sources:
+      - tool: WebSearch
+        hints: "site:youtube.com {query}"
+    prompt_hint: "Prefer educational content 10-30 minutes long. Avoid clickbait."
+    metadata_schema:
+      - name: channel
+        required: true
+      - name: duration
+        required: true
+
+  book:
+    display_name: "Books"
+    description: "Books to read"
+    enabled: true
+    weight: 0.25
+    sources:
+      - tool: WebSearch
+        hints: "site:goodreads.com {query} book"
+    prompt_hint: "Mix fiction and non-fiction. Thematic resonance > surface similarity."
+    metadata_schema:
+      - name: author
+        required: true
+      - name: year
+        required: false
+
+  podcast:
+    display_name: "Podcasts"
+    description: "Audio content"
+    enabled: true
+    weight: 0.15
+    sources:
+      - tool: WebSearch
+        hints: "{query} podcast episode"
+    prompt_hint: "Can recommend specific episodes OR entire shows."
+    metadata_schema:
+      - name: show
+        required: true
+      - name: episode
+        required: false
+
+# CONTEXT SOURCES - Where to get user profile/preferences
+# Two types:
+#   - loader: Python function that returns content
+#   - mcp: MCP server providing tools for Claude
+context_sources:
+  taste:
+    type: loader
+    enabled: true
+    description: "User's aesthetic preferences"
+    loader: serendipity.context_sources.builtins.file_loader
+    prompt_hint: |
+      <persistent_taste>
+      {content}
+      </persistent_taste>
+    options:
+      path: ~/.serendipity/taste.md
+
+  learnings:
+    type: loader
+    enabled: true
+    description: "Extracted patterns from feedback"
+    loader: serendipity.context_sources.builtins.file_loader
+    prompt_hint: |
+      <discovery_learnings>
+      {content}
+      </discovery_learnings>
+    options:
+      path: ~/.serendipity/learnings.md
+
+  history:
+    type: loader
+    enabled: true
+    description: "Recent recommendations and feedback"
+    loader: serendipity.context_sources.builtins.history_loader
+    prompt_hint: |
+      <history_context>
+      {content}
+      </history_context>
+    options:
+      max_recent: 20
+      include_unextracted: true
+      warn_threshold: 10000
+
+  style_guidance:
+    type: loader
+    enabled: true
+    description: "HTML styling preferences"
+    loader: serendipity.context_sources.builtins.style_loader
+    prompt_hint: |
+      <style_guidance>
+      {content}
+      </style_guidance>
+
+  # MCP sources (disabled by default)
+  whorl:
+    type: mcp
+    enabled: false  # Enable with: serendipity sources --enable whorl
+    description: "Personal knowledge base via Whorl"
+    server:
+      url: http://localhost:{port}/mcp/
+      type: http
+      headers:
+        X-Password: whorl
+    health_check:
+      endpoint: /health
+      timeout: 2.0
+    setup:
+      cli_command: whorl
+      install_hint: "pip install whorled && whorl init"
+      home_dir: ~/.whorl
+      docs_dir: ~/.whorl/docs/
+    port:
+      default: 8081
+      max_retries: 10
+    auto_start:
+      enabled: true
+      command: ["whorl", "server", "--port", "{port}"]
+      log_path: ~/.whorl/server.log
+    tools:
+      allowed:
+        - mcp__whorl__text_search_text_search_post
+        - mcp__whorl__agent_search_agent_search_post
+        - mcp__whorl__ingest_ingest_post
+        - mcp__whorl__bash_bash_post
+    system_prompt_hint: |
+      You have access to the user's personal knowledge base via Whorl MCP tools.
+      IMPORTANT: Search Whorl FIRST using mcp__whorl__text_search_text_search_post
+      to understand their preferences, interests, and past writings before making
+      recommendations. This makes your recommendations much more personalized.

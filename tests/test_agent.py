@@ -7,120 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from rich.console import Console
 
-from serendipity.agent import (
-    SerendipityAgent,
-    check_whorl_setup,
-    ensure_whorl_running,
-)
-
-
-class TestCheckWhorlSetup:
-    """Tests for check_whorl_setup function."""
-
-    def test_whorl_not_installed(self):
-        """Test when whorl CLI is not installed."""
-        console = Console()
-        with patch("shutil.which", return_value=None):
-            is_ready, error_msg = check_whorl_setup(console)
-            assert is_ready is False
-            assert "not installed" in error_msg.lower()
-            assert "pip install whorled" in error_msg
-
-    def test_whorl_not_initialized(self):
-        """Test when whorl home directory doesn't exist."""
-        console = Console()
-        with (
-            patch("shutil.which", return_value="/usr/local/bin/whorl"),
-            patch.object(Path, "home", return_value=Path("/nonexistent")),
-        ):
-            is_ready, error_msg = check_whorl_setup(console)
-            assert is_ready is False
-            assert "not initialized" in error_msg.lower()
-            assert "whorl init" in error_msg
-
-    def test_whorl_no_documents(self):
-        """Test when whorl has no documents."""
-        console = Console()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            whorl_home = Path(tmpdir) / ".whorl"
-            whorl_home.mkdir()
-            docs_dir = whorl_home / "docs"
-            docs_dir.mkdir()  # Empty docs directory
-
-            with (
-                patch("shutil.which", return_value="/usr/local/bin/whorl"),
-                patch.object(Path, "home", return_value=Path(tmpdir)),
-            ):
-                is_ready, error_msg = check_whorl_setup(console)
-                assert is_ready is False
-                assert "no documents" in error_msg.lower()
-                assert "whorl upload" in error_msg
-
-    def test_whorl_fully_configured(self):
-        """Test when whorl is fully set up with documents."""
-        console = Console()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            whorl_home = Path(tmpdir) / ".whorl"
-            whorl_home.mkdir()
-            docs_dir = whorl_home / "docs"
-            docs_dir.mkdir()
-            # Create a document
-            (docs_dir / "test.md").write_text("# Test document")
-
-            with (
-                patch("shutil.which", return_value="/usr/local/bin/whorl"),
-                patch.object(Path, "home", return_value=Path(tmpdir)),
-            ):
-                is_ready, error_msg = check_whorl_setup(console)
-                assert is_ready is True
-                assert error_msg == ""
-
-
-class TestEnsureWhorlRunning:
-    """Tests for ensure_whorl_running function."""
-
-    def test_whorl_already_running(self):
-        """Test when whorl server is already running."""
-        console = Console()
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        with (
-            patch("serendipity.agent.check_whorl_setup", return_value=(True, "")),
-            patch("httpx.get", return_value=mock_response),
-        ):
-            result = ensure_whorl_running(console)
-            assert result is True
-
-    def test_whorl_setup_failed_not_installed(self):
-        """Test when whorl is not installed."""
-        console = Console()
-        error_msg = "[red]Whorl not installed.[/red]"
-
-        with patch(
-            "serendipity.agent.check_whorl_setup",
-            return_value=(False, error_msg),
-        ):
-            result = ensure_whorl_running(console)
-            assert result is False
-
-    def test_whorl_setup_failed_no_docs_continues(self):
-        """Test that empty docs warning allows continuation."""
-        console = Console()
-        error_msg = "[yellow]Whorl has no documents.[/yellow]"
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        with (
-            patch(
-                "serendipity.agent.check_whorl_setup",
-                return_value=(False, error_msg),
-            ),
-            patch("httpx.get", return_value=mock_response),
-        ):
-            result = ensure_whorl_running(console)
-            # Should continue because "no documents" is a soft warning
-            assert result is True
+from serendipity.agent import SerendipityAgent
 
 
 class TestParseJson:
@@ -129,8 +16,7 @@ class TestParseJson:
     @pytest.fixture
     def agent(self):
         """Create agent for testing."""
-        with patch("serendipity.agent.ensure_whorl_running"):
-            return SerendipityAgent(console=Console(), whorl=False)
+        return SerendipityAgent(console=Console())
 
     def test_parse_output_tags(self, agent):
         """Test parsing JSON from <output> tags."""
@@ -207,21 +93,26 @@ class TestParseJson:
 class TestGetMcpServers:
     """Tests for _get_mcp_servers method."""
 
-    def test_no_servers_when_whorl_disabled(self):
-        """Test that no MCP servers are returned when Whorl is disabled."""
-        with patch("serendipity.agent.ensure_whorl_running"):
-            agent = SerendipityAgent(console=Console(), whorl=False)
-            servers = agent._get_mcp_servers()
-            assert servers == {}
+    def test_no_servers_when_no_context_manager(self):
+        """Test that no MCP servers are returned without context manager."""
+        agent = SerendipityAgent(console=Console(), context_manager=None)
+        servers = agent._get_mcp_servers()
+        assert servers == {}
 
-    def test_whorl_server_when_enabled(self):
-        """Test that Whorl MCP server is returned when enabled."""
-        with patch("serendipity.agent.ensure_whorl_running", return_value=True):
-            agent = SerendipityAgent(console=Console(), whorl=True)
-            servers = agent._get_mcp_servers()
-            assert "whorl" in servers
-            assert servers["whorl"]["type"] == "http"
-            assert "8081" in servers["whorl"]["url"]
+    def test_mcp_servers_from_context_manager(self):
+        """Test that MCP servers come from context manager."""
+        mock_manager = MagicMock()
+        mock_manager.get_mcp_servers.return_value = {
+            "whorl": {
+                "url": "http://localhost:8081/mcp/",
+                "type": "http",
+                "headers": {"X-Password": "whorl"},
+            }
+        }
+        agent = SerendipityAgent(console=Console(), context_manager=mock_manager)
+        servers = agent._get_mcp_servers()
+        assert "whorl" in servers
+        assert servers["whorl"]["type"] == "http"
 
 
 class TestAllowedTools:
@@ -229,23 +120,42 @@ class TestAllowedTools:
 
     def test_base_tools_always_present(self):
         """Test that WebFetch and WebSearch are always in allowed tools."""
-        # We can't easily test the discover method without mocking the SDK,
-        # but we can verify the logic by inspecting the code structure.
-        # This test documents the expected behavior.
-        base_tools = ["WebFetch", "WebSearch"]
-        assert "WebFetch" in base_tools
-        assert "WebSearch" in base_tools
+        agent = SerendipityAgent(console=Console())
+        tools = agent._get_allowed_tools()
+        assert "WebFetch" in tools
+        assert "WebSearch" in tools
 
-    def test_whorl_tools_list(self):
-        """Test the list of whorl MCP tools."""
-        whorl_tools = [
+    def test_tools_from_context_manager(self):
+        """Test that additional tools come from context manager."""
+        mock_manager = MagicMock()
+        mock_manager.get_allowed_tools.return_value = [
             "mcp__whorl__text_search_text_search_post",
             "mcp__whorl__agent_search_agent_search_post",
-            "mcp__whorl__ingest_ingest_post",
-            "mcp__whorl__bash_bash_post",
         ]
-        assert len(whorl_tools) == 4
-        assert all(tool.startswith("mcp__whorl__") for tool in whorl_tools)
+        agent = SerendipityAgent(console=Console(), context_manager=mock_manager)
+        tools = agent._get_allowed_tools()
+        assert "WebFetch" in tools
+        assert "WebSearch" in tools
+        assert "mcp__whorl__text_search_text_search_post" in tools
+        assert "mcp__whorl__agent_search_agent_search_post" in tools
+
+
+class TestSystemPromptHints:
+    """Tests for system prompt hints."""
+
+    def test_no_hints_without_context_manager(self):
+        """Test that no hints are returned without context manager."""
+        agent = SerendipityAgent(console=Console())
+        hints = agent._get_system_prompt_hints()
+        assert hints == ""
+
+    def test_hints_from_context_manager(self):
+        """Test that hints come from context manager."""
+        mock_manager = MagicMock()
+        mock_manager.get_system_prompt_hints.return_value = "Search Whorl FIRST"
+        agent = SerendipityAgent(console=Console(), context_manager=mock_manager)
+        hints = agent._get_system_prompt_hints()
+        assert "Search Whorl FIRST" in hints
 
 
 class TestAgentInitialization:
@@ -253,31 +163,22 @@ class TestAgentInitialization:
 
     def test_default_initialization(self):
         """Test default agent initialization."""
-        with patch("serendipity.agent.ensure_whorl_running"):
-            agent = SerendipityAgent(console=Console())
-            assert agent.model == "opus"
-            assert agent.verbose is False
-            assert agent.whorl is False
+        agent = SerendipityAgent(console=Console())
+        assert agent.model == "opus"
+        assert agent.verbose is False
+        assert agent.context_manager is None
 
-    def test_whorl_disabled_on_setup_failure(self):
-        """Test that whorl is disabled if setup fails."""
-        with patch("serendipity.agent.ensure_whorl_running", return_value=False):
-            agent = SerendipityAgent(console=Console(), whorl=True)
-            # Whorl should be disabled because ensure_whorl_running returned False
-            assert agent.whorl is False
-
-    def test_whorl_enabled_on_success(self):
-        """Test that whorl stays enabled when setup succeeds."""
-        with patch("serendipity.agent.ensure_whorl_running", return_value=True):
-            agent = SerendipityAgent(console=Console(), whorl=True)
-            assert agent.whorl is True
+    def test_with_context_manager(self):
+        """Test initialization with context manager."""
+        mock_manager = MagicMock()
+        agent = SerendipityAgent(console=Console(), context_manager=mock_manager)
+        assert agent.context_manager == mock_manager
 
     def test_model_parameter(self):
         """Test different model parameters."""
-        with patch("serendipity.agent.ensure_whorl_running"):
-            for model in ["haiku", "sonnet", "opus"]:
-                agent = SerendipityAgent(console=Console(), model=model)
-                assert agent.model == model
+        for model in ["haiku", "sonnet", "opus"]:
+            agent = SerendipityAgent(console=Console(), model=model)
+            assert agent.model == model
 
 
 class TestResumeCommand:
@@ -285,17 +186,15 @@ class TestResumeCommand:
 
     def test_no_session_returns_none(self):
         """Test that no session returns None."""
-        with patch("serendipity.agent.ensure_whorl_running"):
-            agent = SerendipityAgent(console=Console())
-            assert agent.get_resume_command() is None
+        agent = SerendipityAgent(console=Console())
+        assert agent.get_resume_command() is None
 
     def test_session_returns_command(self):
         """Test that session ID returns proper command."""
-        with patch("serendipity.agent.ensure_whorl_running"):
-            agent = SerendipityAgent(console=Console())
-            agent.last_session_id = "abc123"
-            cmd = agent.get_resume_command()
-            assert cmd == "claude -r abc123"
+        agent = SerendipityAgent(console=Console())
+        agent.last_session_id = "abc123"
+        cmd = agent.get_resume_command()
+        assert cmd == "claude -r abc123"
 
 
 class TestGetMoreSessionFeedback:
@@ -304,8 +203,7 @@ class TestGetMoreSessionFeedback:
     @pytest.fixture
     def agent(self):
         """Create agent for testing."""
-        with patch("serendipity.agent.ensure_whorl_running"):
-            return SerendipityAgent(console=Console(), whorl=False)
+        return SerendipityAgent(console=Console())
 
     def test_get_more_accepts_session_feedback_param(self, agent):
         """Test that get_more accepts session_feedback parameter."""
@@ -330,14 +228,11 @@ class TestGetMoreSessionFeedback:
 
     def test_build_feedback_context_with_liked(self, agent):
         """Test that liked items are included in feedback context."""
-        # We test the internal logic by checking prompt construction
-        # The method builds feedback context based on session_feedback
         session_feedback = [
             {"url": "https://liked1.com", "feedback": "liked"},
             {"url": "https://liked2.com", "feedback": "liked"},
         ]
 
-        # Extract the feedback context building logic
         liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
         assert len(liked) == 2
         assert "https://liked1.com" in liked

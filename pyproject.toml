@@ -28,6 +28,7 @@ dependencies = [
     "rank-bm25>=0.2.0",
     "httpx>=0.25.0",
     "structlog>=24.0.0",
+    "pyyaml>=6.0.0",
 ]
 
 [project.scripts]

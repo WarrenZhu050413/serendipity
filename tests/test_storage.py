@@ -110,52 +110,70 @@ class TestStorageManager:
         """Create a StorageManager with temp directory."""
         return StorageManager(base_dir=temp_dir)
 
-    def test_rules_path(self, storage, temp_dir):
-        """Test rules_path property."""
-        assert storage.rules_path == temp_dir / "rules.md"
+    def test_learnings_path(self, storage, temp_dir):
+        """Test learnings_path property."""
+        assert storage.learnings_path == temp_dir / "learnings.md"
 
-    def test_load_rules_empty(self, storage):
-        """Test loading rules when file doesn't exist."""
-        rules = storage.load_rules()
-        assert rules == ""
+    def test_load_learnings_empty(self, storage):
+        """Test loading learnings when file doesn't exist."""
+        learnings = storage.load_learnings()
+        assert learnings == ""
 
-    def test_save_and_load_rules(self, storage):
-        """Test saving and loading rules."""
-        content = "# My Rules\n\n## Likes\n\n### Test Rule\nContent here."
-        storage.save_rules(content)
-        loaded = storage.load_rules()
+    def test_save_and_load_learnings(self, storage):
+        """Test saving and loading learnings."""
+        content = "# My Learnings\n\n## Likes\n\n### Test Learning\nContent here."
+        storage.save_learnings(content)
+        loaded = storage.load_learnings()
         assert loaded == content
 
-    def test_append_rule_to_empty(self, storage):
-        """Test appending a rule when no rules exist."""
-        storage.append_rule("Japanese Minimalism", "I like clean designs.", "like")
-        rules = storage.load_rules()
-        assert "# My Discovery Rules" in rules
-        assert "## Likes" in rules
-        assert "### Japanese Minimalism" in rules
-        assert "I like clean designs." in rules
+    def test_append_learning_to_empty(self, storage):
+        """Test appending a learning when no learnings exist."""
+        storage.append_learning("Japanese Minimalism", "I like clean designs.", "like")
+        learnings = storage.load_learnings()
+        assert "# My Discovery Learnings" in learnings
+        assert "## Likes" in learnings
+        assert "### Japanese Minimalism" in learnings
+        assert "I like clean designs." in learnings
 
-    def test_append_rule_to_existing(self, storage):
-        """Test appending a rule to existing rules."""
-        storage.append_rule("First Rule", "Content 1", "like")
-        storage.append_rule("Second Rule", "Content 2", "like")
-        rules = storage.load_rules()
-        assert "### First Rule" in rules
-        assert "### Second Rule" in rules
+    def test_append_learning_to_existing(self, storage):
+        """Test appending a learning to existing learnings."""
+        storage.append_learning("First Learning", "Content 1", "like")
+        storage.append_learning("Second Learning", "Content 2", "like")
+        learnings = storage.load_learnings()
+        assert "### First Learning" in learnings
+        assert "### Second Learning" in learnings
 
-    def test_append_dislike_rule(self, storage):
-        """Test appending a dislike rule."""
-        storage.append_rule("Clickbait", "I don't like clickbait.", "dislike")
-        rules = storage.load_rules()
-        assert "## Dislikes" in rules
-        assert "### Clickbait" in rules
+    def test_append_dislike_learning(self, storage):
+        """Test appending a dislike learning."""
+        storage.append_learning("Clickbait", "I don't like clickbait.", "dislike")
+        learnings = storage.load_learnings()
+        assert "## Dislikes" in learnings
+        assert "### Clickbait" in learnings
 
-    def test_clear_rules(self, storage):
-        """Test clearing rules."""
-        storage.append_rule("Test", "Content", "like")
-        assert storage.load_rules() != ""
-        storage.clear_rules()
-        assert storage.load_rules() == ""
+    def test_clear_learnings(self, storage):
+        """Test clearing learnings."""
+        storage.append_learning("Test", "Content", "like")
+        assert storage.load_learnings() != ""
+        storage.clear_learnings()
+        assert storage.load_learnings() == ""
+
+    def test_load_taste_empty(self, storage, temp_dir):
+        """Test loading taste when file doesn't exist."""
+        # Configure taste_path to be within temp_dir
+        config = storage.load_config()
+        config.taste_path = str(temp_dir / "taste.md")
+        storage.save_config(config)
+        taste = storage.load_taste()
+        assert taste == ""
+
+    def test_get_taste_path(self, storage, temp_dir):
+        """Test get_taste_path uses config."""
+        # Configure taste_path to be within temp_dir
+        config = storage.load_config()
+        config.taste_path = str(temp_dir / "taste.md")
+        storage.save_config(config)
+        path = storage.get_taste_path()
+        assert path.name == "taste.md"
 
     def test_mark_extracted(self, storage):
         """Test marking entries as extracted."""
@@ -279,12 +297,12 @@ class TestStorageManager:
         disliked = storage.get_unextracted_entries("disliked")
         assert len(disliked) == 1
 
-    def test_build_history_context_with_rules(self, storage):
-        """Test that build_history_context includes rules."""
-        storage.append_rule("Japanese Minimalism", "I like clean designs.", "like")
+    def test_build_history_context_with_learnings(self, storage):
+        """Test that build_history_context includes learnings."""
+        storage.append_learning("Japanese Minimalism", "I like clean designs.", "like")
 
         context = storage.build_history_context()
-        assert "<discovery_rules>" in context
+        assert "<discovery_learnings>" in context
         assert "Japanese Minimalism" in context
 
     def test_build_history_context_filters_extracted(self, storage):
@@ -312,11 +330,11 @@ class TestStorageManager:
         storage.append_history(entries)
 
         context = storage.build_history_context()
-        # Unextracted should be in "Items you've liked (not yet in rules)"
+        # Unextracted should be in "Items you've liked (not yet in learnings)"
         assert "https://unextracted.com" in context
         # Extracted should NOT be in the liked section (but may be in recent)
-        # Check that it's not in the "not yet in rules" section
-        assert "extracted item" not in context or "not yet in rules" not in context.split("extracted.com")[0]
+        # Check that it's not in the "not yet in learnings" section
+        assert "extracted item" not in context or "not yet in learnings" not in context.split("extracted.com")[0]
 
 
 class TestConfig:
@@ -325,7 +343,7 @@ class TestConfig:
     def test_default_values(self):
         """Test default config values."""
         config = Config()
-        assert config.preferences_path == "~/.serendipity/preferences.md"
+        assert config.taste_path == "~/.serendipity/taste.md"
         assert config.history_enabled is True
         assert config.default_model == "opus"
 
@@ -333,17 +351,109 @@ class TestConfig:
         """Test config serialization."""
         config = Config()
         d = config.to_dict()
-        assert "preferences_path" in d
+        assert "taste_path" in d
         assert "history_enabled" in d
 
     def test_from_dict(self):
         """Test config deserialization."""
         d = {
-            "preferences_path": "/custom/path.md",
+            "taste_path": "/custom/path.md",
             "history_enabled": False,
             "default_model": "haiku",
         }
         config = Config.from_dict(d)
-        assert config.preferences_path == "/custom/path.md"
+        assert config.taste_path == "/custom/path.md"
         assert config.history_enabled is False
         assert config.default_model == "haiku"
+
+    def test_from_dict_migrates_old_preferences_path(self):
+        """Test that from_dict handles old preferences_path key."""
+        d = {
+            "preferences_path": "/old/preferences.md",
+            "history_enabled": True,
+        }
+        config = Config.from_dict(d)
+        # Should migrate old key to new
+        assert config.taste_path == "/old/preferences.md"
+
+
+class TestMigration:
+    """Tests for file migration logic."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_migrate_preferences_to_taste(self, temp_dir):
+        """Test migrating preferences.md to taste.md."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+
+        # Create old preferences file
+        old_file = temp_dir / "preferences.md"
+        old_file.write_text("# My Old Preferences")
+
+        migrations = storage.migrate_if_needed()
+
+        assert "preferences.md → taste.md" in migrations[0]
+        assert not old_file.exists()
+        assert (temp_dir / "taste.md").exists()
+        assert (temp_dir / "taste.md").read_text() == "# My Old Preferences"
+
+    def test_migrate_rules_to_learnings(self, temp_dir):
+        """Test migrating rules.md to learnings.md."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+
+        # Create old rules file
+        old_file = temp_dir / "rules.md"
+        old_file.write_text("# My Old Rules")
+
+        migrations = storage.migrate_if_needed()
+
+        assert "rules.md → learnings.md" in migrations[0]
+        assert not old_file.exists()
+        assert (temp_dir / "learnings.md").exists()
+
+    def test_migrate_config_preferences_path(self, temp_dir):
+        """Test migrating preferences_path in config.json."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+
+        # Write old config with preferences_path
+        config_file = temp_dir / "config.json"
+        config_file.write_text(json.dumps({"preferences_path": "~/.serendipity/preferences.md"}))
+
+        migrations = storage.migrate_if_needed()
+
+        assert any("preferences_path → taste_path" in m for m in migrations)
+        # Verify config was updated
+        new_config = json.loads(config_file.read_text())
+        assert "taste_path" in new_config
+        assert "preferences_path" not in new_config
+
+    def test_no_migration_when_new_files_exist(self, temp_dir):
+        """Test that migration doesn't overwrite existing new files."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+
+        # Create both old and new files
+        (temp_dir / "preferences.md").write_text("Old content")
+        (temp_dir / "taste.md").write_text("New content")
+
+        migrations = storage.migrate_if_needed()
+
+        # Should not migrate since new file exists
+        assert len(migrations) == 0
+        assert (temp_dir / "taste.md").read_text() == "New content"
+
+    def test_no_migration_when_nothing_to_migrate(self, temp_dir):
+        """Test that migration returns empty when nothing to do."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+
+        migrations = storage.migrate_if_needed()
+
+        assert migrations == []

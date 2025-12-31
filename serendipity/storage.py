@@ -59,19 +59,29 @@ class Config:
 
 @dataclass
 class HistoryEntry:
-    """A single history entry."""
+    """A single history entry with extended metadata.
+
+    Supports both simple format (backwards compatible) and extended format
+    with media type, title, thumbnail, and type-specific metadata.
+    """
 
     url: str
     reason: str
-    type: str  # "convergent" or "divergent"
+    type: str  # approach: "convergent" or "divergent"
     feedback: Optional[str]  # None, "liked", or "disliked"
     timestamp: str
     session_id: str
     extracted: bool = False  # True if this item has been extracted into a rule
 
+    # Extended fields (optional for backwards compatibility)
+    media_type: str = "article"  # youtube, book, article, podcast, etc.
+    title: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    metadata: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
-        return {
+        result = {
             "url": self.url,
             "reason": self.reason,
             "type": self.type,
@@ -80,10 +90,20 @@ class HistoryEntry:
             "session_id": self.session_id,
             "extracted": self.extracted,
         }
+        # Only include extended fields if they have values
+        if self.media_type != "article":
+            result["media_type"] = self.media_type
+        if self.title:
+            result["title"] = self.title
+        if self.thumbnail_url:
+            result["thumbnail_url"] = self.thumbnail_url
+        if self.metadata:
+            result["metadata"] = self.metadata
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "HistoryEntry":
-        """Create from dictionary."""
+        """Create from dictionary, handling both simple and extended formats."""
         return cls(
             url=data.get("url", ""),
             reason=data.get("reason", ""),
@@ -92,6 +112,10 @@ class HistoryEntry:
             timestamp=data.get("timestamp", ""),
             session_id=data.get("session_id", ""),
             extracted=data.get("extracted", False),
+            media_type=data.get("media_type", "article"),
+            title=data.get("title"),
+            thumbnail_url=data.get("thumbnail_url"),
+            metadata=data.get("metadata", {}),
         )
 
 
