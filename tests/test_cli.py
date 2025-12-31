@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -290,6 +290,61 @@ class TestTasteCommand:
             assert "minimalism" in result.stdout
 
 
+class TestProfileCommand:
+    """Tests for the profile command."""
+
+    @pytest.fixture
+    def temp_storage(self):
+        """Create a temporary storage directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = StorageManager(base_dir=Path(tmpdir))
+            storage.ensure_dirs()
+            yield storage, Path(tmpdir)
+
+    def test_profile_enable_source(self, temp_storage):
+        """Test enabling a source via profile command."""
+        storage, tmpdir = temp_storage
+        from serendipity.config.types import TypesConfig
+        TypesConfig.write_defaults(storage.settings_path)
+
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["profile", "--enable-source", "whorl"])
+            assert result.exit_code == 0
+            assert "Enabled" in result.stdout
+            assert "whorl" in result.stdout
+
+    def test_profile_disable_source(self, temp_storage):
+        """Test disabling a source via profile command."""
+        storage, tmpdir = temp_storage
+        from serendipity.config.types import TypesConfig
+        TypesConfig.write_defaults(storage.settings_path)
+
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["profile", "--disable-source", "taste"])
+            assert result.exit_code == 0
+            assert "Disabled" in result.stdout
+            assert "taste" in result.stdout
+
+    def test_profile_enable_unknown_source(self, temp_storage):
+        """Test enabling an unknown source shows error."""
+        storage, tmpdir = temp_storage
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["profile", "--enable-source", "nonexistent"])
+            assert result.exit_code == 1
+            assert "Unknown source" in result.stdout
+
+    def test_profile_help_shows_new_flags(self):
+        """Test profile --help shows the new flags."""
+        result = runner.invoke(app, ["profile", "--help"])
+        assert result.exit_code == 0
+        assert "--enable-source" in result.stdout
+        assert "--disable-source" in result.stdout
+        assert "--interactive" in result.stdout or "-i" in result.stdout
+
+
 class TestMainCommand:
     """Tests for the main app behavior."""
 
@@ -341,7 +396,89 @@ class TestSurpriseMeMode:
             # Should show onboarding
             assert "taste" in result.stdout.lower() or "profile" in result.stdout.lower()
 
-    # Note: Tests that require mocking the full agent flow are in test_agent.py
-    # These tests cover the "surprise me" behavior at the CLI level
+
+class TestDiscoverCommand:
+    """Tests for the discover command."""
+
+    @pytest.fixture
+    def temp_storage_with_profile(self):
+        """Create a temporary storage with taste profile."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = StorageManager(base_dir=Path(tmpdir))
+            storage.ensure_dirs()
+            # Create taste profile to bypass onboarding
+            storage.taste_path.write_text("# My Taste\n\nI like minimalism.")
+            yield storage, Path(tmpdir)
+
+    def test_discover_help(self):
+        """Test discover --help."""
+        result = runner.invoke(app, ["discover", "--help"])
+        assert result.exit_code == 0
+        assert "context" in result.stdout.lower()
+        assert "model" in result.stdout.lower()
+
+    def test_discover_paste_flag_recognized(self):
+        """Test that --paste flag is recognized in help."""
+        result = runner.invoke(app, ["discover", "--help"])
+        assert result.exit_code == 0
+        assert "--paste" in result.stdout or "-p" in result.stdout
+
+    def test_discover_verbose_flag_recognized(self):
+        """Test that --verbose flag is recognized in help."""
+        result = runner.invoke(app, ["discover", "--help"])
+        assert result.exit_code == 0
+        assert "--verbose" in result.stdout or "-v" in result.stdout
+
+    def test_discover_model_flag(self, temp_storage_with_profile):
+        """Test that --model flag is recognized."""
+        storage, tmpdir = temp_storage_with_profile
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            # Just verify the flag is recognized
+            result = runner.invoke(app, ["discover", "--help"])
+            assert "--model" in result.stdout
+
+
+class TestCLIIntegration:
+    """Integration tests for CLI flows."""
+
+    @pytest.fixture
+    def temp_storage(self):
+        """Create a temporary storage directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = StorageManager(base_dir=Path(tmpdir))
+            storage.ensure_dirs()
+            yield storage, Path(tmpdir)
+
+    def test_full_profile_flow(self, temp_storage):
+        """Test profile subcommand navigation."""
+        storage, tmpdir = temp_storage
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+
+            # Check profile help
+            result = runner.invoke(app, ["profile", "--help"])
+            assert result.exit_code == 0
+            assert "taste" in result.stdout
+            assert "learnings" in result.stdout
+            assert "history" in result.stdout
+
+    def test_settings_and_profile_source_sync(self, temp_storage):
+        """Test that settings and profile share source enable/disable."""
+        storage, tmpdir = temp_storage
+        from serendipity.config.types import TypesConfig
+        TypesConfig.write_defaults(storage.settings_path)
+
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+
+            # Enable via settings
+            result = runner.invoke(app, ["settings", "--enable-source", "whorl"])
+            assert result.exit_code == 0
+            assert "Enabled" in result.stdout
+
+            # Check it's enabled
+            config = TypesConfig.from_yaml(storage.settings_path)
+            assert config.context_sources["whorl"].enabled is True
 
 

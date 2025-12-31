@@ -81,6 +81,22 @@ def profile_callback(
         "-e",
         help="Open taste.md in $EDITOR",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Interactive profile setup wizard",
+    ),
+    enable_source: Optional[str] = typer.Option(
+        None,
+        "--enable-source",
+        help="Enable a context source",
+    ),
+    disable_source: Optional[str] = typer.Option(
+        None,
+        "--disable-source",
+        help="Disable a context source",
+    ),
 ) -> None:
     """View your profile - what Claude knows about you.
 
@@ -90,9 +106,41 @@ def profile_callback(
       [dim]$[/dim] serendipity profile             [dim]# Overview of all sources[/dim]
       [dim]$[/dim] serendipity profile --show      [dim]# Full content of each source[/dim]
       [dim]$[/dim] serendipity profile --edit      [dim]# Edit taste.md[/dim]
+      [dim]$[/dim] serendipity profile -i          [dim]# Interactive setup wizard[/dim]
+      [dim]$[/dim] serendipity profile --enable-source whorl
     """
+    import yaml
+
     storage = StorageManager()
     storage.ensure_dirs()
+
+    # Handle --enable-source / --disable-source
+    if enable_source or disable_source:
+        config = TypesConfig.from_yaml(storage.settings_path)
+        source_name = enable_source or disable_source
+
+        if source_name not in config.context_sources:
+            console.print(f"[red]Error:[/red] Unknown source '{source_name}'")
+            console.print(f"[dim]Available: {', '.join(config.context_sources.keys())}[/dim]")
+            raise typer.Exit(1)
+
+        yaml_content = storage.settings_path.read_text()
+        data = yaml.safe_load(yaml_content) or {}
+        if "context_sources" not in data:
+            data["context_sources"] = {}
+        if source_name not in data["context_sources"]:
+            data["context_sources"][source_name] = config.context_sources[source_name].raw_config.copy()
+        data["context_sources"][source_name]["enabled"] = bool(enable_source)
+        storage.settings_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+        action = "Enabled" if enable_source else "Disabled"
+        console.print(f"[green]{action} '{source_name}'[/green]")
+        return
+
+    # Handle -i interactive wizard
+    if interactive:
+        _profile_interactive_wizard(storage)
+        return
 
     # Handle --edit flag
     if edit:
@@ -175,9 +223,206 @@ def profile_callback(
             console.print(f"{status} [dim]{name}[/dim] ({source_type}) - disabled")
 
     console.print(f"\n[dim]Total context: ~{total_words} words[/dim]")
-    console.print(f"\n[dim]Edit taste: serendipity profile --edit[/dim]")
-    console.print(f"[dim]Full content: serendipity profile --show[/dim]")
-    console.print(f"[dim]Manage sources: serendipity settings[/dim]")
+    console.print(f"\n[dim]Setup wizard: serendipity profile -i[/dim]")
+    console.print(f"[dim]Edit taste: serendipity profile --edit[/dim]")
+    console.print(f"[dim]Toggle source: serendipity profile --enable-source <name>[/dim]")
+
+
+def _profile_interactive_wizard(storage: StorageManager) -> None:
+    """Interactive wizard for profile setup."""
+    import yaml
+
+    console.print(Panel(
+        "Set up your profile - what Claude will know about you",
+        title="Profile Setup Wizard",
+        border_style="blue",
+    ))
+
+    # Step 1: Taste profile
+    console.print("\n[bold]Step 1: Taste Profile[/bold]")
+    taste_content = storage.load_taste()
+    has_taste = taste_content.strip() and "Describe your aesthetic preferences" not in taste_content
+
+    if has_taste:
+        preview = taste_content[:200].replace('\n', ' ')
+        if len(taste_content) > 200:
+            preview += "..."
+        console.print(f"[green]You have a taste profile:[/green] {preview}")
+        edit_taste = questionary.confirm("Edit your taste profile?", default=False).ask()
+    else:
+        console.print("[yellow]No taste profile yet.[/yellow]")
+        edit_taste = questionary.confirm("Create a taste profile now?", default=True).ask()
+
+    if edit_taste:
+        taste_path = storage.taste_path
+        if not taste_path.exists():
+            taste_path.parent.mkdir(parents=True, exist_ok=True)
+            taste_path.write_text(
+                "# My Taste Profile\n\n"
+                "Describe your aesthetic preferences, interests, and what you enjoy.\n\n"
+                "Examples:\n"
+                "- I'm drawn to Japanese minimalism and wabi-sabi aesthetics\n"
+                "- I love long-form essays on philosophy and design\n"
+                "- I appreciate things that feel contemplative and unhurried\n"
+            )
+        editor = os.environ.get("EDITOR", "vim")
+        subprocess.run([editor, str(taste_path)])
+        console.print(success("Taste profile saved"))
+
+    # Step 2: Context sources
+    console.print("\n[bold]Step 2: Context Sources[/bold]")
+    console.print("[dim]Choose which sources Claude uses to understand you[/dim]\n")
+
+    config = TypesConfig.from_yaml(storage.settings_path)
+
+    source_choices = []
+    for name, source in config.context_sources.items():
+        desc = source.description or f"{source.type} source"
+        label = f"{name}: {desc}"
+        source_choices.append(questionary.Choice(label, value=name, checked=source.enabled))
+
+    selected = questionary.checkbox(
+        "Enable sources (space to toggle):",
+        choices=source_choices,
+    ).ask()
+
+    if selected is not None:
+        # Update settings.yaml
+        yaml_content = storage.settings_path.read_text()
+        data = yaml.safe_load(yaml_content) or {}
+        if "context_sources" not in data:
+            data["context_sources"] = {}
+
+        for name in config.context_sources.keys():
+            if name not in data["context_sources"]:
+                data["context_sources"][name] = config.context_sources[name].raw_config.copy()
+            data["context_sources"][name]["enabled"] = name in selected
+
+        storage.settings_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        console.print(success(f"Enabled sources: {', '.join(selected) if selected else 'none'}"))
+
+    console.print("\n[green]Profile setup complete![/green]")
+    console.print("[dim]Run 'serendipity' to get recommendations[/dim]")
+
+
+def _settings_interactive_wizard(storage: StorageManager) -> None:
+    """Interactive wizard for settings configuration."""
+    import yaml
+
+    console.print(Panel(
+        "Configure how serendipity works",
+        title="Settings Wizard",
+        border_style="blue",
+    ))
+
+    config = TypesConfig.from_yaml(storage.settings_path)
+    yaml_content = storage.settings_path.read_text()
+    data = yaml.safe_load(yaml_content) or {}
+
+    # Step 1: Model
+    console.print("\n[bold]Step 1: Model[/bold]")
+    model_choices = [
+        questionary.Choice("haiku - Fast and cheap", value="haiku"),
+        questionary.Choice("sonnet - Balanced (recommended)", value="sonnet"),
+        questionary.Choice("opus - Most capable", value="opus"),
+    ]
+    current_model = config.model
+    console.print(f"[dim]Current: {current_model}[/dim]")
+
+    model = questionary.select(
+        "Which Claude model?",
+        choices=model_choices,
+        default=current_model,
+    ).ask()
+
+    if model:
+        data["model"] = model
+
+    # Step 2: Total count
+    console.print("\n[bold]Step 2: Recommendation Count[/bold]")
+    console.print(f"[dim]Current: {config.total_count}[/dim]")
+
+    count_str = questionary.text(
+        "How many recommendations per run?",
+        default=str(config.total_count),
+        validate=lambda x: x.isdigit() and int(x) > 0,
+    ).ask()
+
+    if count_str:
+        data["total_count"] = int(count_str)
+
+    # Step 3: Approaches
+    console.print("\n[bold]Step 3: Discovery Approaches[/bold]")
+    console.print("[dim]How should Claude find content for you?[/dim]\n")
+
+    approach_choices = []
+    for name, approach in config.approaches.items():
+        label = f"{approach.display_name}"
+        approach_choices.append(questionary.Choice(label, value=name, checked=approach.enabled))
+
+    selected_approaches = questionary.checkbox(
+        "Enable approaches (space to toggle):",
+        choices=approach_choices,
+    ).ask()
+
+    if selected_approaches is not None:
+        if "approaches" not in data:
+            data["approaches"] = {}
+        for name in config.approaches.keys():
+            if name not in data["approaches"]:
+                data["approaches"][name] = {}
+            data["approaches"][name]["enabled"] = name in selected_approaches
+
+    # Step 4: Media types
+    console.print("\n[bold]Step 4: Media Types[/bold]")
+    console.print("[dim]What formats of content do you want?[/dim]\n")
+
+    media_choices = []
+    for name, media in config.media.items():
+        label = f"{media.display_name}"
+        media_choices.append(questionary.Choice(label, value=name, checked=media.enabled))
+
+    selected_media = questionary.checkbox(
+        "Enable media types (space to toggle):",
+        choices=media_choices,
+    ).ask()
+
+    if selected_media is not None:
+        if "media" not in data:
+            data["media"] = {}
+        for name in config.media.keys():
+            if name not in data["media"]:
+                data["media"][name] = {}
+            data["media"][name]["enabled"] = name in selected_media
+
+    # Step 5: Context sources
+    console.print("\n[bold]Step 5: Context Sources[/bold]")
+    console.print("[dim]What should Claude know about you?[/dim]\n")
+
+    source_choices = []
+    for name, source in config.context_sources.items():
+        desc = source.description or f"{source.type} source"
+        label = f"{name}: {desc}"
+        source_choices.append(questionary.Choice(label, value=name, checked=source.enabled))
+
+    selected_sources = questionary.checkbox(
+        "Enable sources (space to toggle):",
+        choices=source_choices,
+    ).ask()
+
+    if selected_sources is not None:
+        if "context_sources" not in data:
+            data["context_sources"] = {}
+        for name in config.context_sources.keys():
+            if name not in data["context_sources"]:
+                data["context_sources"][name] = config.context_sources[name].raw_config.copy()
+            data["context_sources"][name]["enabled"] = name in selected_sources
+
+    # Save
+    storage.settings_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+    console.print("\n[green]Settings saved![/green]")
+    console.print(f"[dim]Config: {storage.settings_path}[/dim]")
 
 
 # Rich formatting helpers
@@ -751,6 +996,12 @@ def settings(
         "-e",
         help="Open settings.yaml in $EDITOR",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Interactive settings wizard",
+    ),
     preview: bool = typer.Option(
         False,
         "--preview",
@@ -781,6 +1032,7 @@ def settings(
 
     EXAMPLES:
     $ serendipity settings                        # Show all settings
+    $ serendipity settings -i                     # Interactive wizard
     $ serendipity settings --edit                 # Edit in $EDITOR
     $ serendipity settings --reset                # Restore defaults
     $ serendipity settings --enable-source whorl  # Enable context source
@@ -808,6 +1060,10 @@ def settings(
         editor = os.environ.get("EDITOR", "vim")
         TypesConfig.from_yaml(settings_path)  # Ensure file exists
         subprocess.run([editor, str(settings_path)])
+        return
+
+    if interactive:
+        _settings_interactive_wizard(storage)
         return
 
     if preview:
