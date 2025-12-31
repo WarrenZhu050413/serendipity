@@ -17,7 +17,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from serendipity.agent import BASE_TEMPLATE, Recommendation, SerendipityAgent
+from serendipity.agent import Recommendation, SerendipityAgent
+from serendipity.resources import get_base_template
 
 # Config setting descriptions
 CONFIG_DESCRIPTIONS = {
@@ -73,6 +74,104 @@ def callback(ctx: typer.Context) -> None:
             title="serendipity",
             border_style="blue",
         ))
+
+
+@context_app.callback()
+def context_callback(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show word counts per section",
+    ),
+) -> None:
+    """Preview what context gets injected into Claude's prompt.
+
+    Shows preferences, rules, recent history, and pending feedback.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    storage = StorageManager()
+    storage.ensure_dirs()
+
+    output_lines = []
+
+    # Preferences section
+    preferences = storage.load_preferences()
+    if preferences.strip():
+        # Check if it's still the default template
+        if "Describe your aesthetic preferences" in preferences and "Examples:" in preferences:
+            pref_display = "[dim]Default template (not customized)[/dim]"
+            pref_words = 0
+        else:
+            pref_words = storage.count_words(preferences)
+            pref_display = preferences[:500] + "..." if len(preferences) > 500 else preferences
+    else:
+        pref_display = "[dim]Not set[/dim]"
+        pref_words = 0
+
+    header = "PREFERENCES" + (f" ({pref_words} words)" if verbose and pref_words else "")
+    output_lines.append(f"[bold cyan]{header}[/bold cyan]")
+    output_lines.append(pref_display)
+    output_lines.append("")
+
+    # Rules section
+    rules_content = storage.load_rules()
+    if rules_content.strip():
+        rules_words = storage.count_words(rules_content)
+        rules_display = rules_content[:500] + "..." if len(rules_content) > 500 else rules_content
+    else:
+        rules_display = "[dim]No rules defined[/dim]"
+        rules_words = 0
+
+    header = "DISCOVERY RULES" + (f" ({rules_words} words)" if verbose and rules_words else "")
+    output_lines.append(f"[bold cyan]{header}[/bold cyan]")
+    output_lines.append(rules_display)
+    output_lines.append("")
+
+    # Recent history section
+    recent = storage.load_recent_history(20)
+    header = "RECENT HISTORY" + (f" ({len(recent)} items)" if recent else "")
+    output_lines.append(f"[bold cyan]{header}[/bold cyan]")
+    if recent:
+        for entry in recent[-5:]:  # Show last 5
+            feedback = ""
+            if entry.feedback == "liked":
+                feedback = " [green](liked)[/green]"
+            elif entry.feedback == "disliked":
+                feedback = " [red](disliked)[/red]"
+            output_lines.append(f"  - {entry.url[:60]}{'...' if len(entry.url) > 60 else ''}{feedback}")
+        if len(recent) > 5:
+            output_lines.append(f"  [dim]... and {len(recent) - 5} more[/dim]")
+    else:
+        output_lines.append("[dim]No history[/dim]")
+    output_lines.append("")
+
+    # Unextracted feedback section
+    liked = storage.get_unextracted_entries(feedback="liked")
+    disliked = storage.get_unextracted_entries(feedback="disliked")
+    output_lines.append(f"[bold cyan]PENDING FEEDBACK[/bold cyan]")
+    output_lines.append(f"  Unextracted likes: {len(liked)}")
+    output_lines.append(f"  Unextracted dislikes: {len(disliked)}")
+
+    # Total word count
+    if verbose:
+        total_words = pref_words + rules_words
+        output_lines.append("")
+        output_lines.append(f"[dim]Total context: ~{total_words} words (excluding history)[/dim]")
+
+    console.print(Panel(
+        "\n".join(output_lines),
+        title="Model Context Preview",
+        border_style="blue",
+    ))
+
+    console.print("\n[bold]Subcommands:[/bold]")
+    console.print("  serendipity context preferences   # Edit taste profile")
+    console.print("  serendipity context history       # View history")
+    console.print("  serendipity context rules         # Manage rules")
 
 
 # Rich formatting helpers
@@ -457,7 +556,7 @@ def discover_cmd(
             if "Describe your aesthetic preferences" in preferences and "Examples:" in preferences:
                 console.print(warning(
                     "Preferences file contains default template. "
-                    "Run 'serendipity preferences' to customize it. Skipping for now."
+                    "Run 'serendipity context preferences' to customize it. Skipping for now."
                 ))
             else:
                 # Check preferences length
@@ -500,7 +599,7 @@ def discover_cmd(
         ))
 
     # Get template path (copies package default to user location on first use)
-    template_path = storage.get_template_path(BASE_TEMPLATE)
+    template_path = storage.get_template_path(get_base_template())
 
     # Run discovery
     agent = SerendipityAgent(
@@ -638,9 +737,9 @@ def config(
         cfg = storage.load_config()
 
         # Type conversion based on key
-        if key in ("history_enabled", "summarize_old_history"):
+        if key in ("history_enabled",):
             value = value.lower() in ("true", "1", "yes")
-        elif key in ("max_recent_history", "summary_threshold", "feedback_server_port", "default_n1", "default_n2"):
+        elif key in ("max_recent_history", "feedback_server_port", "default_n1", "default_n2"):
             value = int(value)
         elif key == "html_style" and value.lower() == "null":
             value = None
@@ -760,54 +859,85 @@ def config(
     console.print(f"\n[dim]Config file: {storage.config_path}[/dim]")
 
 
-@app.command()
+@context_app.command()
 def preferences(
     show: bool = typer.Option(
         False,
         "--show",
         help="Show current preferences",
     ),
+    edit: bool = typer.Option(
+        False,
+        "--edit",
+        help="Open preferences.md in $EDITOR",
+    ),
+    clear: bool = typer.Option(
+        False,
+        "--clear",
+        help="Clear all preferences",
+    ),
 ) -> None:
-    """Edit your persistent taste profile.
+    """Manage your persistent taste profile.
 
-    Opens preferences.md in $EDITOR for editing.
+    Your preferences describe your aesthetic sensibilities, interests, and
+    what kind of content you enjoy discovering.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity context preferences           [dim]# Show preferences[/dim]
+      [dim]$[/dim] serendipity context preferences --edit    [dim]# Edit in $EDITOR[/dim]
+      [dim]$[/dim] serendipity context preferences --clear   [dim]# Clear preferences[/dim]
     """
     storage = StorageManager()
     storage.ensure_dirs()
 
-    if show:
-        prefs = storage.load_preferences()
-        if prefs.strip():
-            console.print(Panel(prefs, title="Preferences", border_style="blue"))
-        else:
-            console.print("[dim]No preferences set. Run 'serendipity preferences' to create.[/dim]")
-        return
-
-    # Open in editor
     prefs_path = storage.get_preferences_path()
 
-    # Create file if it doesn't exist
-    if not prefs_path.exists():
-        prefs_path.parent.mkdir(parents=True, exist_ok=True)
-        prefs_path.write_text(
-            "# My Taste Profile\n\n"
-            "<!-- DELETE EVERYTHING ABOVE AND BELOW THIS LINE -->\n"
-            "<!-- Replace with your actual preferences -->\n\n"
-            "Describe your aesthetic preferences, interests, and what kind of content you enjoy.\n\n"
-            "Examples:\n"
-            "- I'm drawn to Japanese minimalism and wabi-sabi aesthetics\n"
-            "- I love long-form essays on philosophy and design\n"
-            "- I appreciate things that feel contemplative and unhurried\n\n"
-            "<!-- This template will be skipped until you customize it -->\n"
-        )
+    if clear:
+        if not typer.confirm("Clear all preferences? This cannot be undone."):
+            console.print(warning("Cancelled"))
+            return
+        if prefs_path.exists():
+            prefs_path.unlink()
+        console.print(success("Preferences cleared"))
+        return
 
-    editor = os.environ.get("EDITOR", "vim")
-    subprocess.run([editor, str(prefs_path)])
-    console.print(success(f"Preferences saved to {prefs_path}"))
+    if edit:
+        # Create file if it doesn't exist
+        if not prefs_path.exists():
+            prefs_path.parent.mkdir(parents=True, exist_ok=True)
+            prefs_path.write_text(
+                "# My Taste Profile\n\n"
+                "<!-- DELETE EVERYTHING ABOVE AND BELOW THIS LINE -->\n"
+                "<!-- Replace with your actual preferences -->\n\n"
+                "Describe your aesthetic preferences, interests, and what kind of content you enjoy.\n\n"
+                "Examples:\n"
+                "- I'm drawn to Japanese minimalism and wabi-sabi aesthetics\n"
+                "- I love long-form essays on philosophy and design\n"
+                "- I appreciate things that feel contemplative and unhurried\n\n"
+                "<!-- This template will be skipped until you customize it -->\n"
+            )
+
+        editor = os.environ.get("EDITOR", "vim")
+        subprocess.run([editor, str(prefs_path)])
+        console.print(success(f"Preferences saved to {prefs_path}"))
+        return
+
+    # Default: show preferences
+    prefs = storage.load_preferences()
+    if prefs.strip():
+        console.print(Panel(prefs, title="Preferences", border_style="blue"))
+    else:
+        console.print("[dim]No preferences set. Run 'serendipity context preferences --edit' to create.[/dim]")
+    console.print(f"\n[dim]Preferences file: {prefs_path}[/dim]")
 
 
-@app.command()
+@context_app.command()
 def history(
+    show: bool = typer.Option(
+        False,
+        "--show",
+        help="Show recommendation history",
+    ),
     liked: bool = typer.Option(
         False,
         "--liked",
@@ -823,11 +953,6 @@ def history(
         "--clear",
         help="Clear all history",
     ),
-    summarize: bool = typer.Option(
-        False,
-        "--summarize",
-        help="Regenerate history summary",
-    ),
     limit: int = typer.Option(
         20,
         "--limit",
@@ -837,10 +962,13 @@ def history(
 ) -> None:
     """View and manage recommendation history.
 
+    History tracks all recommendations shown to you, including feedback
+    (likes/dislikes) and whether rules have been extracted.
+
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity history                 [dim]# Show recent[/dim]
-      [dim]$[/dim] serendipity history --liked         [dim]# Show liked only[/dim]
-      [dim]$[/dim] serendipity history --clear         [dim]# Clear history[/dim]
+      [dim]$[/dim] serendipity context history                 [dim]# Show recent[/dim]
+      [dim]$[/dim] serendipity context history --liked         [dim]# Show liked only[/dim]
+      [dim]$[/dim] serendipity context history --clear         [dim]# Clear history[/dim]
     """
     storage = StorageManager()
 
@@ -848,12 +976,6 @@ def history(
         if typer.confirm("Are you sure you want to clear all history?"):
             storage.clear_history()
             console.print(success("History cleared"))
-        return
-
-    if summarize:
-        console.print("[dim]Regenerating history summary...[/dim]")
-        # TODO: Implement summary regeneration with Claude
-        console.print(warning("Summary regeneration not yet implemented"))
         return
 
     # Get entries
@@ -889,7 +1011,7 @@ def history(
     console.print(f"\n[dim]History file: {storage.history_path}[/dim]")
 
 
-@app.command()
+@context_app.command()
 def rules(
     interactive: bool = typer.Option(
         False,
@@ -919,9 +1041,9 @@ def rules(
     that guide future recommendations more efficiently.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity rules           [dim]# Show rules[/dim]
-      [dim]$[/dim] serendipity rules -i        [dim]# Interactive wizard[/dim]
-      [dim]$[/dim] serendipity rules --edit    [dim]# Edit in $EDITOR[/dim]
+      [dim]$[/dim] serendipity context rules           [dim]# Show rules[/dim]
+      [dim]$[/dim] serendipity context rules -i        [dim]# Interactive wizard[/dim]
+      [dim]$[/dim] serendipity context rules --edit    [dim]# Edit in $EDITOR[/dim]
     """
     storage = StorageManager()
     storage.ensure_dirs()
@@ -952,7 +1074,7 @@ def rules(
     if rules_content.strip():
         console.print(Panel(rules_content, title="Discovery Rules", border_style="blue"))
     else:
-        console.print("[dim]No rules defined yet. Run 'serendipity rules -i' to extract from history.[/dim]")
+        console.print("[dim]No rules defined yet. Run 'serendipity context rules -i' to extract from history.[/dim]")
     console.print(f"\n[dim]Rules file: {storage.rules_path}[/dim]")
 
 

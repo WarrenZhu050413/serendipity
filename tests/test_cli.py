@@ -29,7 +29,7 @@ class TestRulesCommand:
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["rules"])
+            result = runner.invoke(app, ["context", "rules"])
             assert result.exit_code == 0
             assert "No rules defined" in result.stdout
 
@@ -40,7 +40,7 @@ class TestRulesCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["rules"])
+            result = runner.invoke(app, ["context", "rules"])
             assert result.exit_code == 0
             assert "Test Rule" in result.stdout
 
@@ -51,7 +51,7 @@ class TestRulesCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["rules", "--clear"], input="n\n")
+            result = runner.invoke(app, ["context", "rules", "--clear"], input="n\n")
             assert result.exit_code == 0
             assert "Cancelled" in result.stdout
             # Rule should still exist
@@ -64,7 +64,7 @@ class TestRulesCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["rules", "--clear"], input="y\n")
+            result = runner.invoke(app, ["context", "rules", "--clear"], input="y\n")
             assert result.exit_code == 0
             assert "cleared" in result.stdout.lower()
             # Rule should be gone
@@ -72,7 +72,7 @@ class TestRulesCommand:
 
     def test_rules_help(self):
         """Test rules command help."""
-        result = runner.invoke(app, ["rules", "--help"])
+        result = runner.invoke(app, ["context", "rules", "--help"])
         assert result.exit_code == 0
         assert "interactive" in result.stdout.lower()
         assert "edit" in result.stdout.lower()
@@ -114,7 +114,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["history"])
+            result = runner.invoke(app, ["context", "history"])
             assert result.exit_code == 0
             assert "example1.com" in result.stdout
             assert "example2.com" in result.stdout
@@ -124,7 +124,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["history", "--liked"])
+            result = runner.invoke(app, ["context", "history", "--liked"])
             assert result.exit_code == 0
             assert "example1.com" in result.stdout
             assert "example2.com" not in result.stdout
@@ -134,7 +134,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["history", "--disliked"])
+            result = runner.invoke(app, ["context", "history", "--disliked"])
             assert result.exit_code == 0
             assert "example1.com" not in result.stdout
             assert "example2.com" in result.stdout
@@ -210,7 +210,7 @@ class TestPreferencesCommand:
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["preferences", "--show"])
+            result = runner.invoke(app, ["context", "preferences", "--show"])
             assert result.exit_code == 0
             # Either shows "No preferences" or shows default content
             # The actual behavior depends on whether preferences file exists
@@ -219,11 +219,12 @@ class TestPreferencesCommand:
     def test_preferences_show_with_content(self, temp_storage):
         """Test showing preferences when they exist."""
         storage, tmpdir = temp_storage
-        storage.save_preferences("# My Taste\n\nI like minimalism.")
+        # Write preferences directly to file (save_preferences was removed as dead code)
+        storage.get_preferences_path().write_text("# My Taste\n\nI like minimalism.")
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["preferences", "--show"])
+            result = runner.invoke(app, ["context", "preferences", "--show"])
             assert result.exit_code == 0
             assert "minimalism" in result.stdout
 
@@ -243,4 +244,4 @@ class TestMainCommand:
         assert result.exit_code == 0
         assert "discover" in result.stdout
         assert "config" in result.stdout
-        assert "rules" in result.stdout
+        assert "context" in result.stdout  # Now uses context subcommand group

@@ -26,6 +26,7 @@ from claude_agent_sdk import (
 from rich.console import Console
 
 from serendipity.display import AgentDisplay, DisplayConfig
+from serendipity.resources import get_base_template, get_discovery_prompt, get_frontend_design
 
 # Configure structured logging
 structlog.configure(
@@ -43,9 +44,6 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-PROMPT_TEMPLATE = Path(__file__).parent / "prompt.txt"
-BASE_TEMPLATE = Path(__file__).parent / "base_template.html"
-FRONTEND_DESIGN = Path(__file__).parent / "frontend_design.md"
 OUTPUT_DIR = Path.home() / ".serendipity" / "output"
 WHORL_PORT = 8081
 WHORL_LOG_PATH = Path.home() / ".whorl" / "server.log"
@@ -212,11 +210,13 @@ class SerendipityAgent:
         self.verbose = verbose
         self.whorl = whorl
         self.server_port = server_port
-        self.prompt_template = PROMPT_TEMPLATE.read_text()
+        self.prompt_template = get_discovery_prompt()
         # Use provided template path or fall back to package default
-        template_file = template_path or BASE_TEMPLATE
-        self.base_template = template_file.read_text()
-        self.frontend_design = FRONTEND_DESIGN.read_text() if FRONTEND_DESIGN.exists() else ""
+        if template_path:
+            self.base_template = template_path.read_text()
+        else:
+            self.base_template = get_base_template()
+        self.frontend_design = get_frontend_design()
         self.output_dir = OUTPUT_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.last_session_id: Optional[str] = None

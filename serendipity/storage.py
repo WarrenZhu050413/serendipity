@@ -1,6 +1,7 @@
 """Storage manager for serendipity configuration, history, and preferences."""
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -12,10 +13,9 @@ class Config:
     """Serendipity configuration."""
 
     preferences_path: str = "~/.serendipity/preferences.md"
+    template_path: str = "~/.serendipity/template.html"
     history_enabled: bool = True
     max_recent_history: int = 20
-    summarize_old_history: bool = True
-    summary_threshold: int = 50
     feedback_server_port: int = 9876
     default_model: str = "opus"
     default_n1: int = 5
@@ -26,10 +26,9 @@ class Config:
         """Convert to dictionary."""
         return {
             "preferences_path": self.preferences_path,
+            "template_path": self.template_path,
             "history_enabled": self.history_enabled,
             "max_recent_history": self.max_recent_history,
-            "summarize_old_history": self.summarize_old_history,
-            "summary_threshold": self.summary_threshold,
             "feedback_server_port": self.feedback_server_port,
             "default_model": self.default_model,
             "default_n1": self.default_n1,
@@ -42,10 +41,9 @@ class Config:
         """Create from dictionary."""
         return cls(
             preferences_path=data.get("preferences_path", "~/.serendipity/preferences.md"),
+            template_path=data.get("template_path", "~/.serendipity/template.html"),
             history_enabled=data.get("history_enabled", True),
             max_recent_history=data.get("max_recent_history", 20),
-            summarize_old_history=data.get("summarize_old_history", True),
-            summary_threshold=data.get("summary_threshold", 50),
             feedback_server_port=data.get("feedback_server_port", 9876),
             default_model=data.get("default_model", "opus"),
             default_n1=data.get("default_n1", 5),
@@ -113,21 +111,41 @@ class StorageManager:
         return self.base_dir / "history.jsonl"
 
     @property
-    def summary_path(self) -> Path:
-        return self.base_dir / "history_summary.txt"
-
-    @property
     def rules_path(self) -> Path:
         return self.base_dir / "rules.md"
+
+    @property
+    def output_dir(self) -> Path:
+        return self.base_dir / "output"
 
     def get_preferences_path(self) -> Path:
         """Get preferences path, expanding ~ if needed."""
         config = self.load_config()
         return Path(config.preferences_path).expanduser()
 
+    def get_template_path(self, default_content: str) -> Path:
+        """Get template path, writing default content on first use.
+
+        Args:
+            default_content: Default template content to write if user template doesn't exist
+
+        Returns:
+            Path to the user's template file
+        """
+        config = self.load_config()
+        user_path = Path(config.template_path).expanduser()
+
+        # Write default content to user location on first use
+        if not user_path.exists():
+            user_path.parent.mkdir(parents=True, exist_ok=True)
+            user_path.write_text(default_content)
+
+        return user_path
+
     def ensure_dirs(self) -> None:
         """Ensure storage directories exist."""
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def load_config(self) -> Config:
         """Load configuration from file."""
@@ -164,12 +182,6 @@ class StorageManager:
         if not path.exists():
             return ""
         return path.read_text()
-
-    def save_preferences(self, content: str) -> None:
-        """Save user preferences to file."""
-        path = self.get_preferences_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
 
     # Rules management
 
@@ -346,50 +358,10 @@ class StorageManager:
         """Get all disliked history entries."""
         return [e for e in self.load_all_history() if e.feedback == "disliked"]
 
-    def get_all_urls(self) -> set[str]:
-        """Get all URLs ever shown (to avoid repeating)."""
-        return {e.url for e in self.load_all_history()}
-
-    def load_history_summary(self) -> str:
-        """Load history summary from file."""
-        if not self.summary_path.exists():
-            return ""
-        return self.summary_path.read_text()
-
-    def save_history_summary(self, summary: str) -> None:
-        """Save history summary to file."""
-        self.ensure_dirs()
-        self.summary_path.write_text(summary)
-
-    def needs_summary_update(self) -> bool:
-        """Check if history summary needs to be regenerated.
-
-        Returns True if:
-        - Summary doesn't exist and we have history
-        - Number of entries since last summary exceeds threshold
-        """
-        config = self.load_config()
-        if not config.summarize_old_history:
-            return False
-
-        history = self.load_all_history()
-        if not history:
-            return False
-
-        if not self.summary_path.exists():
-            return len(history) >= config.summary_threshold
-
-        # Check if we have enough new entries since last summary
-        # For now, we'll just check total count vs threshold
-        # A more sophisticated approach would track last summarized count
-        return len(history) >= config.summary_threshold * 2
-
     def clear_history(self) -> None:
         """Clear all history."""
         if self.history_path.exists():
             self.history_path.unlink()
-        if self.summary_path.exists():
-            self.summary_path.unlink()
 
     def count_words(self, text: str) -> int:
         """Count words in text."""
@@ -403,7 +375,7 @@ class StorageManager:
                            Called with (message: str) when context is too long.
 
         Returns:
-            String with history context (rules, recent items, unextracted likes/dislikes, summary).
+            String with history context (rules, recent items, unextracted likes/dislikes).
         """
         config = self.load_config()
 
@@ -443,11 +415,6 @@ class StorageManager:
             history_parts.append(
                 "Items you didn't like (not yet in rules):\n" + "\n".join(disliked_lines)
             )
-
-        # 5. Summary (legacy, for old history)
-        summary = self.load_history_summary()
-        if summary.strip():
-            history_parts.append(f"Long-term patterns:\n{summary}")
 
         if not history_parts:
             return ""
