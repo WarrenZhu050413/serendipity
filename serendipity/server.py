@@ -20,6 +20,7 @@ class FeedbackServer:
         storage: StorageManager,
         on_more_request: Optional[Callable] = None,
         idle_timeout: int = 600,  # 10 minutes
+        html_content: Optional[str] = None,
     ):
         """Initialize feedback server.
 
@@ -27,10 +28,12 @@ class FeedbackServer:
             storage: Storage manager for persisting feedback
             on_more_request: Callback for "more" requests. Called with (session_id, type, count).
             idle_timeout: Seconds of inactivity before auto-shutdown
+            html_content: Optional HTML content to serve at /
         """
         self.storage = storage
         self.on_more_request = on_more_request
         self.idle_timeout = idle_timeout
+        self.html_content = html_content
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -45,6 +48,7 @@ class FeedbackServer:
             port: Port to listen on
         """
         self._app = web.Application()
+        self._app.router.add_get("/", self._handle_index)
         self._app.router.add_post("/feedback", self._handle_feedback)
         self._app.router.add_post("/more", self._handle_more)
         self._app.router.add_get("/health", self._handle_health)
@@ -107,6 +111,19 @@ class FeedbackServer:
         return web.json_response(
             {"status": "healthy", "service": "serendipity-feedback"},
             headers=self._cors_headers(),
+        )
+
+    async def _handle_index(self, request: web.Request) -> web.Response:
+        """Serve the HTML page."""
+        self._update_activity()
+        if self.html_content:
+            return web.Response(
+                text=self.html_content,
+                content_type="text/html",
+            )
+        return web.Response(
+            text="<html><body><h1>Serendipity</h1><p>No content available.</p></body></html>",
+            content_type="text/html",
         )
 
     async def _handle_feedback(self, request: web.Request) -> web.Response:

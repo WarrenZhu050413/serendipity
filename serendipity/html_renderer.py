@@ -231,7 +231,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <script>
         const SESSION_ID = "{session_id}";
         const SERVER_PORT = {server_port};
-        const API_BASE = `http://localhost:${{SERVER_PORT}}`;
+        // Use relative URL if served from localhost, otherwise absolute
+        const API_BASE = window.location.hostname === 'localhost' ? '' : `http://localhost:${{SERVER_PORT}}`;
 
         async function feedback(button, rating) {{
             const rec = button.closest('.recommendation');

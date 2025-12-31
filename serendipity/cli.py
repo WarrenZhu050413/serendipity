@@ -32,7 +32,7 @@ CONFIG_DESCRIPTIONS = {
     "default_n2": "Default number of divergent recommendations (expand your taste)",
     "html_style": "HTML styling preference (null=auto-generate based on taste)",
 }
-from serendipity.html_renderer import render_and_open
+from serendipity.html_renderer import render_html, render_and_open
 from serendipity.storage import Config, HistoryEntry, StorageManager
 
 app = typer.Typer(
@@ -250,35 +250,44 @@ def _start_feedback_server(
     storage: StorageManager,
     agent: SerendipityAgent,
     port: int,
+    html_content: Optional[str] = None,
 ) -> None:
     """Start the feedback server in a background thread."""
     from serendipity.server import FeedbackServer
 
     async def on_more_request(session_id: str, rec_type: str, count: int):
         """Handle 'more' requests from HTML."""
-        recommendations = await agent.get_more(session_id, rec_type, count)
+        try:
+            console.print(f"[dim]Getting {count} more {rec_type} recommendations...[/dim]")
+            recommendations = await agent.get_more(session_id, rec_type, count)
 
-        # Save to history
-        entries = []
-        timestamp = datetime.now().isoformat()
-        for rec in recommendations:
-            entries.append(HistoryEntry(
-                url=rec.url,
-                reason=rec.reason,
-                type=rec_type,
-                feedback=None,
-                timestamp=timestamp,
-                session_id=session_id,
-            ))
-        storage.append_history(entries)
+            # Save to history
+            entries = []
+            timestamp = datetime.now().isoformat()
+            for rec in recommendations:
+                entries.append(HistoryEntry(
+                    url=rec.url,
+                    reason=rec.reason,
+                    type=rec_type,
+                    feedback=None,
+                    timestamp=timestamp,
+                    session_id=session_id,
+                ))
+            storage.append_history(entries)
 
-        return [{"url": r.url, "reason": r.reason} for r in recommendations]
+            return [{"url": r.url, "reason": r.reason} for r in recommendations]
+        except Exception as e:
+            import traceback
+            console.print(f"[red]Error getting more recommendations: {e}[/red]")
+            traceback.print_exc()
+            raise
 
     async def run_server():
         server = FeedbackServer(
             storage=storage,
             on_more_request=on_more_request,
             idle_timeout=600,  # 10 minutes
+            html_content=html_content,
         )
         await server.start(port)
 
@@ -296,9 +305,28 @@ def _start_feedback_server(
             loop.run_until_complete(run_server())
         except KeyboardInterrupt:
             pass
+        except Exception as e:
+            import traceback
+            console.print(f"[red]Feedback server error: {e}[/red]")
+            traceback.print_exc()
 
     thread = threading.Thread(target=thread_target, daemon=True)
     thread.start()
+
+    # Wait for server to be ready
+    import urllib.request
+    import time
+    for _ in range(10):  # Try for up to 1 second
+        try:
+            req = urllib.request.Request(f"http://localhost:{port}/health")
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                if resp.status == 200:
+                    break
+        except Exception:
+            time.sleep(0.1)
+    else:
+        console.print("[yellow]Warning: Feedback server may not be ready[/yellow]")
+
     return thread
 
 
@@ -458,11 +486,18 @@ def discover_cmd(
 
     # Output based on format
     if output_format == "html":
-        # Start feedback server
-        _start_feedback_server(storage, agent, config.feedback_server_port)
+        # Generate HTML content
+        html_content = render_html(result, server_port=config.feedback_server_port)
 
-        path = render_and_open(result, server_port=config.feedback_server_port)
-        console.print(success(f"Opened in browser: {path}"))
+        # Start feedback server with HTML content (serves at localhost/)
+        _start_feedback_server(storage, agent, config.feedback_server_port, html_content=html_content)
+
+        # Open browser to localhost server (avoids file:// CORS issues)
+        import webbrowser
+        url = f"http://localhost:{config.feedback_server_port}/"
+        webbrowser.open(url)
+
+        console.print(success(f"Opened in browser: {url}"))
         console.print(f"[dim]Feedback server running on localhost:{config.feedback_server_port}[/dim]")
         console.print("[dim]Press Ctrl+C to stop the server when done.[/dim]")
 
