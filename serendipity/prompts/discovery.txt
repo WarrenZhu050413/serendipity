@@ -39,6 +39,10 @@ This is the HTML template that your CSS will style. Study its structure:
 
 {frontend_design}
 
+## User Context
+
+{user_context}
+
 ## Output Format
 
 Output your verification log, recommendations, and CSS in separate sections:
@@ -60,5 +64,3 @@ Search: "query you searched"
 /* Your complete custom CSS here */
 /* Style the template to match the user's aesthetic */
 </css>
-
-{user_context}
