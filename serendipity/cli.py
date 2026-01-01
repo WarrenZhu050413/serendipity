@@ -83,13 +83,13 @@ def callback(
         None,
         "--model",
         "-m",
-        help="Claude model (haiku, sonnet, opus)",
+        help="Claude model (haiku, sonnet, opus) [overrides settings.yaml]",
     ),
     output_format: str = typer.Option(
         "html",
         "--output-format",
         "-o",
-        help="Output format: html, terminal, json",
+        help="Output format: html (browser UI), terminal (stdout), json (structured)",
     ),
     verbose: bool = typer.Option(
         False,
@@ -113,18 +113,18 @@ def callback(
         None,
         "--thinking",
         "-t",
-        help="Enable extended thinking with specified token budget",
+        help="Extended thinking token budget [overrides settings.yaml]",
     ),
     count: Optional[int] = typer.Option(
         None,
         "--count",
         "-n",
-        help="Number of recommendations to generate",
+        help="Number of recommendations [overrides settings.yaml]",
     ),
     port: Optional[int] = typer.Option(
         None,
         "--port",
-        help="Port for feedback server",
+        help="Feedback server port [overrides settings.yaml]",
     ),
 ) -> None:
     """Personal Serendipity Engine - discover convergent and divergent content recommendations."""
@@ -1047,13 +1047,13 @@ def discover_cmd(
         None,
         "--model",
         "-m",
-        help="Claude model (haiku, sonnet, opus)",
+        help="Claude model (haiku, sonnet, opus) [overrides settings.yaml]",
     ),
     output_format: str = typer.Option(
         "html",
         "--output-format",
         "-o",
-        help="Output format: html, terminal, json",
+        help="Output format: html (browser UI), terminal (stdout), json (structured)",
     ),
     verbose: bool = typer.Option(
         False,
@@ -1077,18 +1077,18 @@ def discover_cmd(
         None,
         "--thinking",
         "-t",
-        help="Enable extended thinking with specified token budget (e.g., 10000)",
+        help="Extended thinking token budget (e.g., 10000) [overrides settings.yaml]",
     ),
     count: Optional[int] = typer.Option(
         None,
         "--count",
         "-n",
-        help="Number of recommendations to generate (default: 10)",
+        help="Number of recommendations (default: 10) [overrides settings.yaml]",
     ),
     port: Optional[int] = typer.Option(
         None,
         "--port",
-        help="Port for feedback server (default: 9876)",
+        help="Feedback server port (default: 9876) [overrides settings.yaml]",
     ),
 ) -> None:
     """Discover convergent and divergent content recommendations.
@@ -1102,6 +1102,13 @@ def discover_cmd(
       [dim]$[/dim] serendipity -o terminal               [dim]# No browser[/dim]
       [dim]$[/dim] serendipity -s whorl                  [dim]# With Whorl knowledge base[/dim]
       [dim]$[/dim] serendipity -d history                [dim]# Without history[/dim]
+
+    [bold cyan]INPUT PRIORITY[/bold cyan] (highest to lowest):
+      1. FILE_PATH argument (or '-' for explicit stdin)
+      2. -p/--paste (clipboard)
+      3. -i/--interactive (editor)
+      4. Piped stdin (auto-detected)
+      5. None = "surprise me" mode (uses profile only)
     """
     # Load storage
     storage = StorageManager()
@@ -2218,13 +2225,24 @@ def profile_edit(
     # Check if source is editable
     if source_config.type == "mcp":
         console.print(error(f"'{source_name}' is an MCP source (read-only)."))
+        console.print("[dim]MCP sources fetch content from external servers and cannot be edited directly.[/dim]")
         console.print(f"[dim]Use 'serendipity profile get {source_name}' to view its configuration.[/dim]")
         raise typer.Exit(1)
 
     is_editable, file_path = is_source_editable(source_config)
     if not is_editable:
-        console.print(error(f"'{source_name}' is not editable (no file path)."))
-        console.print(f"[dim]This source uses loader: {source_config.raw_config.get('loader', 'unknown')}[/dim]")
+        loader = source_config.raw_config.get("loader", "unknown")
+        has_path = source_config.raw_config.get("options", {}).get("path")
+
+        if loader != "serendipity.context_sources.builtins.file_loader":
+            # Dynamic loader (style_loader, history_loader, etc.)
+            console.print(error(f"'{source_name}' uses a dynamic loader and cannot be edited."))
+            console.print("[dim]Only file-based sources (using file_loader) are editable.[/dim]")
+            console.print(f"[dim]This source uses: {loader}[/dim]")
+        else:
+            # file_loader but no path configured
+            console.print(error(f"'{source_name}' has no file path configured."))
+            console.print("[dim]Add 'path' to options in settings.yaml to make it editable.[/dim]")
         raise typer.Exit(1)
 
     _handle_profile_file_source(storage, source_config, file_path, clear=False, edit=True)
