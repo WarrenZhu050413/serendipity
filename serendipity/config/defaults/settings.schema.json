@@ -46,6 +46,45 @@
       "additionalProperties": {
         "$ref": "#/definitions/ContextSource"
       }
+    },
+    "thinking_tokens": {
+      "type": ["integer", "null"],
+      "description": "Extended thinking budget (null=disabled)",
+      "default": 1024
+    },
+    "pairings_enabled": {
+      "type": "boolean",
+      "description": "Whether to include contextual pairings",
+      "default": true
+    },
+    "pairings": {
+      "type": "object",
+      "description": "Contextual bonus content (music, food, etc.)",
+      "additionalProperties": {
+        "$ref": "#/definitions/PairingType"
+      }
+    },
+    "output": {
+      "type": "object",
+      "description": "Output format and destination settings",
+      "properties": {
+        "default_format": {
+          "type": "string",
+          "enum": ["json", "markdown", "html"],
+          "default": "html"
+        },
+        "default_destination": {
+          "type": "string",
+          "enum": ["browser", "stdout", "file", "gmail", "slack"],
+          "default": "browser"
+        },
+        "destinations": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/OutputDestination"
+          }
+        }
+      }
     }
   },
   "definitions": {
@@ -242,6 +281,70 @@
         }
       },
       "required": ["type", "server"]
+    },
+    "PairingType": {
+      "type": "object",
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable name shown in UI"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "search_based": {
+          "type": "boolean",
+          "description": "If true, uses WebSearch to find real links",
+          "default": false
+        },
+        "icon": {
+          "type": "string",
+          "description": "Icon for the pairing. Can be an emoji (🎵), Lucide icon name (music), or SVG path (icons/music.svg)"
+        },
+        "max_count": {
+          "type": "integer",
+          "description": "Maximum number of this pairing type"
+        },
+        "prompt_hint": {
+          "type": "string",
+          "description": "Instructions for Claude about this pairing"
+        }
+      },
+      "required": ["display_name"]
+    },
+    "OutputDestination": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["builtin", "command", "webhook"]
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "description": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string",
+          "description": "Shell command for 'command' type destinations"
+        },
+        "webhook_url": {
+          "type": "string",
+          "description": "URL for 'webhook' type destinations"
+        },
+        "format": {
+          "type": "string",
+          "description": "Override output format for this destination"
+        },
+        "options": {
+          "type": "object",
+          "description": "Destination-specific options"
+        }
+      },
+      "required": ["type"]
     }
   }
 }

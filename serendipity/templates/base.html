@@ -6,6 +6,7 @@ Left panel with Profile/Settings tabs, dark mode support, API integration.
 
 PLACEHOLDERS (automatically replaced by Python):
 - {css} - CSS from ~/.serendipity/style.css
+- {icons_json} - Auto-discovered SVG icons from static/icons/
 - {recommendations_html} - All recommendation cards
 - {pairings_html} - Contextual pairing suggestions
 - {session_id} - The current session ID
@@ -130,8 +131,8 @@ Customize styling with: serendipity settings style --edit
                             </div>
                             <div class="source-content">
                                 <div class="preferences-tabs">
-                                    <button class="pref-tab active" data-pref="liked" onclick="switchPrefTab('liked')">👍 Liked</button>
-                                    <button class="pref-tab" data-pref="disliked" onclick="switchPrefTab('disliked')">👎 Disliked</button>
+                                    <button class="pref-tab active" data-pref="liked" onclick="switchPrefTab('liked')"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>Liked</button>
+                                    <button class="pref-tab" data-pref="disliked" onclick="switchPrefTab('disliked')"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>Disliked</button>
                                 </div>
                                 <div class="preferences-list" id="preferences-list"></div>
                             </div>
@@ -160,7 +161,10 @@ Customize styling with: serendipity settings style --edit
                             <h3 class="section-title">Generation</h3>
 
                             <div class="setting-row">
-                                <label class="setting-label">Model</label>
+                                <label class="setting-label">
+                                    Model
+                                    <span class="hint restart-hint">restart required</span>
+                                </label>
                                 <select class="setting-select" id="model-select">
                                     <option value="opus">Opus</option>
                                     <option value="sonnet">Sonnet</option>
@@ -183,6 +187,7 @@ Customize styling with: serendipity settings style --edit
                                 <label class="setting-label">
                                     Thinking Tokens
                                     <span class="hint">extended thinking</span>
+                                    <span class="hint restart-hint">restart required</span>
                                 </label>
                                 <input type="text" class="setting-input" placeholder="null (disabled)" id="thinking-input">
                             </div>
@@ -245,8 +250,8 @@ Customize styling with: serendipity settings style --edit
                 <div class="center-header">
                     <div class="stats-bar">
                         <div class="stat">Shown: <span id="stat-shown">0</span></div>
-                        <div class="stat liked">👍 <span id="stat-liked">0</span></div>
-                        <div class="stat">👎 <span id="stat-disliked">0</span></div>
+                        <div class="stat liked"><svg class="stat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg><span id="stat-liked">0</span></div>
+                        <div class="stat disliked"><svg class="stat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg><span id="stat-disliked">0</span></div>
                         <div class="search-bar">
                             <input type="text" id="card-search" placeholder="🔍 Filter cards..." oninput="filterCards()">
                             <span class="search-results" id="search-results"></span>
@@ -254,7 +259,7 @@ Customize styling with: serendipity settings style --edit
                     </div>
                     <div class="directives-row">
                         <input type="text" class="directives-input" id="directives-input" placeholder="Custom directives (e.g., 'more philosophy', 'avoid podcasts') - Press Enter to load more">
-                        <button class="round-btn" id="generate-btn" onclick="requestMore('convergent')">
+                        <button class="round-btn" id="generate-btn" onclick="requestMoreAll()">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="23 4 23 10 17 10"></polyline>
                                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
@@ -301,6 +306,16 @@ Customize styling with: serendipity settings style --edit
         const SESSION_ID = "{session_id}";
         const SERVER_PORT = {server_port};
         const API_BASE = window.location.hostname === 'localhost' ? '' : `http://localhost:${SERVER_PORT}`;
+
+        // Lucide SVG icon paths - auto-injected from server
+        const ICONS = {icons_json};
+
+        // Helper to generate SVG HTML
+        function getIcon(name, className = '', size = 24, strokeWidth = 2) {
+            const path = ICONS[name];
+            if (!path) return `<span class="${className}">?</span>`;
+            return `<svg class="${className}" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+        }
 
         // =============================================================
         // STATE
@@ -384,9 +399,27 @@ Customize styling with: serendipity settings style --edit
             input.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    requestMore('convergent');
+                    requestMoreAll();
                 }
             });
+        }
+
+        // Get enabled approaches from the UI toggles
+        function getEnabledApproaches() {
+            const approaches = [];
+            document.querySelectorAll('[data-approach]').forEach(toggle => {
+                if (toggle.classList.contains('active')) {
+                    approaches.push(toggle.dataset.approach);
+                }
+            });
+            return approaches.length > 0 ? approaches : ['convergent']; // fallback
+        }
+
+        // Request recommendations for all enabled approaches
+        async function requestMoreAll() {
+            const approaches = getEnabledApproaches();
+            // Pass all enabled approaches - model decides distribution
+            await requestMore(approaches.join(','));
         }
 
         function updateStats() {
@@ -523,17 +556,21 @@ Customize styling with: serendipity settings style --edit
                 return;
             }
 
-            list.innerHTML = history.slice(0, 20).map(h => `
+            list.innerHTML = history.slice(0, 20).map(h => {
+                const icon = h.feedback === 'liked' ? getIcon('thumbs-up', 'history-thumb', 14)
+                           : h.feedback === 'disliked' ? getIcon('thumbs-down', 'history-thumb', 14)
+                           : '•';
+                return `
                 <div class="history-item">
                     <div class="history-item-content">
-                        <span class="history-icon ${h.feedback === 'disliked' ? 'disliked' : ''}">${h.feedback === 'liked' ? '👍' : h.feedback === 'disliked' ? '👎' : '•'}</span>
+                        <span class="history-icon ${h.feedback === 'disliked' ? 'disliked' : ''}">${icon}</span>
                         <span class="history-title">${escapeHtml(h.title || h.url)}</span>
                     </div>
                     <button class="history-delete" title="Remove" onclick="deleteHistory('${encodeURIComponent(h.url)}')">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        ${getIcon('x', '', 12)}
                     </button>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
 
             // Also render preferences from the same data
             renderPreferences(history);
@@ -549,7 +586,7 @@ Customize styling with: serendipity settings style --edit
             const disliked = history.filter(h => h.feedback === 'disliked');
 
             document.getElementById('preferences-count').textContent =
-                `${liked.length} 👍 / ${disliked.length} 👎`;
+                `${liked.length} / ${disliked.length}`;
 
             updatePreferencesList();
         }
@@ -711,6 +748,9 @@ Customize styling with: serendipity settings style --edit
         function setupSaveButtons() {
             // Save taste
             document.getElementById('save-taste-btn').addEventListener('click', async () => {
+                const btn = document.getElementById('save-taste-btn');
+                btn.classList.add('loading');
+
                 const content = document.getElementById('taste-textarea').value;
                 try {
                     await API.post('/api/profile/taste', { content });
@@ -721,11 +761,16 @@ Customize styling with: serendipity settings style --edit
                     }, 2000);
                 } catch (e) {
                     alert('Failed to save taste');
+                } finally {
+                    btn.classList.remove('loading');
                 }
             });
 
             // Save settings
             document.getElementById('save-settings-btn').addEventListener('click', async () => {
+                const btn = document.getElementById('save-settings-btn');
+                btn.classList.add('loading');
+
                 const settings = {
                     model: document.getElementById('model-select').value,
                     total_count: parseInt(document.getElementById('count-slider').value),
@@ -758,12 +803,17 @@ Customize styling with: serendipity settings style --edit
                     }, 2000);
                 } catch (e) {
                     alert('Failed to save settings');
+                } finally {
+                    btn.classList.remove('loading');
                 }
             });
 
             // Reset settings
             document.getElementById('reset-settings-btn').addEventListener('click', async () => {
                 if (!confirm('Reset all settings to defaults?')) return;
+                const btn = document.getElementById('reset-settings-btn');
+                btn.classList.add('loading');
+
                 try {
                     await API.post('/api/settings/reset', {});
                     await loadSettings();
@@ -771,6 +821,8 @@ Customize styling with: serendipity settings style --edit
                     document.getElementById('settings-save-status').textContent = 'Reset!';
                 } catch (e) {
                     alert('Failed to reset settings');
+                } finally {
+                    btn.classList.remove('loading');
                 }
             });
         }
@@ -962,11 +1014,14 @@ Customize styling with: serendipity settings style --edit
             // Increment batch ID
             currentBatchId++;
 
+            // Get count from settings (model decides distribution)
+            const totalCount = parseInt(document.getElementById('count-slider').value) || 10;
+
             // Build request payload
             const payload = {
                 session_id: SESSION_ID,
-                type: type,
-                count: 5,
+                type: type,  // Can be "convergent", "divergent", or "convergent,divergent"
+                count: totalCount,
                 session_feedback: sessionFeedback
             };
 
@@ -1074,14 +1129,10 @@ Customize styling with: serendipity settings style --edit
             card.innerHTML = `
                 <div class="card-feedback">
                     <button class="feedback-btn like" title="Like" onclick="feedback(this, 'liked')">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path>
-                        </svg>
+                        ${getIcon('thumbs-up', '', 24)}
                     </button>
                     <button class="feedback-btn dislike" title="Dislike" onclick="feedback(this, 'disliked')">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path>
-                        </svg>
+                        ${getIcon('thumbs-down', '', 24)}
                     </button>
                 </div>
                 <div class="card-body">
@@ -1140,22 +1191,12 @@ Customize styling with: serendipity settings style --edit
 
             pairingsGrid = pairingsSection.querySelector('.pairings-grid');
 
-            // Pairing icons
-            const icons = {
-                'music': '🎵',
-                'exercise': '🏃',
-                'food': '🍽️',
-                'tip': '💡',
-                'quote': '📜',
-                'action': '🎯'
-            };
-
             // Add new pairings to the front
             pairings.reverse().forEach(p => {
                 const card = document.createElement('article');
                 const pType = p.type || 'tip';
                 card.className = `pairing-card pairing-${pType} new-pairing`;
-                const icon = icons[pType] || '✨';
+                const iconHtml = getIcon(pType, 'pairing-icon-svg', 24, 1.5);
                 const typeLabel = pType.charAt(0).toUpperCase() + pType.slice(1);
 
                 let linkHtml = '';
@@ -1165,7 +1206,7 @@ Customize styling with: serendipity settings style --edit
                 }
 
                 card.innerHTML = `
-                    <div class="pairing-icon">${icon}</div>
+                    <div class="pairing-icon">${iconHtml}</div>
                     <div class="pairing-body">
                         <span class="pairing-type">${typeLabel}</span>
                         <p class="pairing-content">${escapeHtml(p.content || '')}</p>
@@ -1256,8 +1297,9 @@ Customize styling with: serendipity settings style --edit
 
         // Expose functions needed by inline onclick handlers
         window.requestMore = requestMore;
+        window.requestMoreAll = requestMoreAll;
         window.toggleSource = toggleSource;
-        window.recordFeedback = recordFeedback;
+        window.feedback = feedback;
         window.filterCards = filterCards;
         window.switchPrefTab = switchPrefTab;
         window.toggleSearchHistory = toggleSearchHistory;

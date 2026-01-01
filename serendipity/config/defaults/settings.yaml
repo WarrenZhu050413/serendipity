@@ -12,7 +12,7 @@ version: 2
 model: opus
 total_count: 10
 feedback_server_port: 9876
-thinking_tokens: null  # Extended thinking budget (null=disabled, e.g., 10000)
+thinking_tokens: 1024  # Extended thinking budget (null=disabled, e.g., 10000)
 
 # APPROACHES - How to find recommendations
 approaches:
@@ -145,7 +145,7 @@ context_sources:
       {content}
       </persistent_taste>
     options:
-      path: "{profile_dir}/taste.md"
+      path: "{profile_dir}/user_data/taste.md"
 
   learnings:
     type: loader
@@ -157,7 +157,7 @@ context_sources:
       {content}
       </discovery_learnings>
     options:
-      path: "{profile_dir}/learnings.md"
+      path: "{profile_dir}/user_data/learnings.md"
 
   history:
     type: loader
@@ -231,7 +231,7 @@ pairings:
     display_name: "Listen"
     enabled: true
     search_based: true
-    icon: "🎵"
+    icon: "music"  # Lucide: music.svg
     prompt_hint: |
       Suggest a song or album that complements their current mood, topic, or context.
       Search for the actual track/album. Include artist name and why it fits.
@@ -240,7 +240,7 @@ pairings:
     display_name: "Taste"
     enabled: true
     search_based: true
-    icon: "🍽️"
+    icon: "utensils"  # Lucide: utensils.svg
     prompt_hint: |
       Suggest a recipe or dish that thematically connects to their interests.
       Search for actual recipes. Include cuisine style and cooking time if possible.
@@ -249,7 +249,7 @@ pairings:
     display_name: "Move"
     enabled: true
     search_based: false
-    icon: "🏃"
+    icon: "footprints"  # Lucide: footprints.svg
     prompt_hint: |
       Suggest a quick exercise, stretch, or movement that relates to their context.
       Keep it under 5 minutes. Can be thematic (e.g., "writer's block" -> hand stretches).
@@ -258,7 +258,7 @@ pairings:
     display_name: "Try"
     enabled: true
     search_based: false
-    icon: "💡"
+    icon: "lightbulb"  # Lucide: lightbulb.svg
     prompt_hint: |
       One small actionable insight related to their interests or current context.
       Should be practical and immediately usable. Keep it concise.
@@ -268,7 +268,7 @@ pairings:
     enabled: true
     search_based: false
     max_count: 1
-    icon: "📜"
+    icon: "quote"  # Lucide: quote.svg
     prompt_hint: |
       A resonant quote that connects to their current context or interests.
       Include author/source. Choose wisely - only ONE quote allowed.
@@ -277,7 +277,7 @@ pairings:
     display_name: "Do"
     enabled: true
     search_based: false
-    icon: "🎯"
+    icon: "target"  # Lucide: target.svg
     prompt_hint: |
       Suggest a specific activity or action for right now. Examples:
       - Short exercise or stretch (5-10 min)

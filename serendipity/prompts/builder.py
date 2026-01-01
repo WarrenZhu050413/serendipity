@@ -8,6 +8,7 @@ Compiles TypesConfig into prompt sections with:
 """
 
 from serendipity.config.types import TypesConfig
+from serendipity.icons import get_icon_terminal
 
 
 MEDIA_ICONS = {
@@ -25,15 +26,6 @@ MEDIA_ICONS = {
     "event": "📅",
     "music": "🎵",
     "image": "🖼️",
-}
-
-PAIRING_ICONS = {
-    "music": "🎵",
-    "exercise": "🏃",
-    "food": "🍽️",
-    "tip": "💡",
-    "quote": "📜",
-    "action": "🎯",
 }
 
 
@@ -136,7 +128,7 @@ class PromptBuilder:
         if search_based:
             lines.append("### Search-Based Pairings (use WebSearch)")
             for pairing in search_based:
-                icon = pairing.icon or PAIRING_ICONS.get(pairing.name, "✨")
+                icon = get_icon_terminal(pairing.icon) if pairing.icon else "✨"
                 max_note = f" (max {pairing.max_count})" if pairing.max_count else ""
                 lines.append(f"#### {icon} {pairing.display_name}{max_note}")
                 if pairing.prompt_hint:
@@ -146,7 +138,7 @@ class PromptBuilder:
         if generated:
             lines.append("### Generated Pairings (from your knowledge)")
             for pairing in generated:
-                icon = pairing.icon or PAIRING_ICONS.get(pairing.name, "✨")
+                icon = get_icon_terminal(pairing.icon) if pairing.icon else "✨"
                 max_note = f" (max {pairing.max_count})" if pairing.max_count else ""
                 lines.append(f"#### {icon} {pairing.display_name}{max_note}")
                 if pairing.prompt_hint:
@@ -165,6 +157,8 @@ class PromptBuilder:
         enabled_pairings = self.config.get_enabled_pairings()
 
         lines = ["## OUTPUT FORMAT", ""]
+        lines.append("**CRITICAL: Put ALL your recommendations in this JSON structure. Do NOT write recommendations as prose/markdown - only the JSON is parsed.**")
+        lines.append("")
         lines.append("Wrap your output JSON in <recommendations> tags:")
         lines.append("")
         lines.append("<recommendations>")

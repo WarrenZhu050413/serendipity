@@ -25,6 +25,7 @@ from rich.console import Console
 
 from serendipity.config.types import TypesConfig
 from serendipity.display import AgentDisplay, DisplayConfig
+from serendipity.icons import get_icon_html, get_icon_terminal, get_icons_json
 from serendipity.models import HtmlStyle, Pairing, Recommendation, StatusEvent
 from serendipity.prompts.builder import PromptBuilder
 from serendipity.resources import (
@@ -297,6 +298,7 @@ class SerendipityAgent:
         # Build HTML from template with file-based CSS
         html_content = self.base_template
         html_content = html_content.replace("{css}", self.style_css)
+        html_content = html_content.replace("{icons_json}", get_icons_json())
 
         # Combine all recommendations into a single list for masonry grid
         all_recs = parsed.get("convergent", []) + parsed.get("divergent", [])
@@ -505,16 +507,15 @@ Output as JSON:
         """
         from typing import AsyncGenerator
 
-        type_description = (
-            "convergent (matching their taste directly)"
-            if rec_type == "convergent"
-            else "divergent (expanding their palette)"
-        )
+        # Parse type(s) - can be comma-separated
+        types = [t.strip() for t in rec_type.split(",")]
+        is_multi_type = len(types) > 1
 
         # Yield initial status
+        display_type = "mixed" if is_multi_type else types[0]
         yield StatusEvent(
             event="status",
-            data={"message": f"Getting {count} {rec_type} recommendations..."}
+            data={"message": f"Getting {count} {display_type} recommendations..."}
         )
 
         # Build feedback context
@@ -557,18 +558,31 @@ Output as JSON:
                 data={"message": f'Directives: "{display_text}"'}
             )
 
-        prompt = f"""Give me {count} more {type_description} recommendations, different from what you've already suggested.{feedback_context}{profile_update_context}{directives_context}
+        # Build JSON output format based on requested types
+        if is_multi_type:
+            json_format = """{
+  "batch_title": "A short evocative title for this batch",
+  "convergent": [{"url": "...", "reason": "..."}],
+  "divergent": [{"url": "...", "reason": "..."}],
+  "pairings": [{"type": "quote|music|tip", "content": "...", "title": "optional link title", "url": "optional url"}]
+}"""
+        else:
+            json_format = f"""{{
+  "batch_title": "A short evocative title for this batch",
+  "{types[0]}": [{{"url": "...", "reason": "..."}}],
+  "pairings": [{{"type": "quote|music|tip", "content": "...", "title": "optional link title", "url": "optional url"}}]
+}}"""
+
+        # Simple prompt - model already has approach context from initial discovery
+        types_str = " and ".join(types)
+        prompt = f"""Give me {count} more {types_str} recommendations, different from what you've already suggested.{feedback_context}{profile_update_context}{directives_context}
 
 Also:
 1. Create a thematic title for this batch (something evocative that captures the theme/mood)
 2. Suggest 2-3 contextual pairings (quote, music, or tip) that complement these recommendations
 
 Output as JSON:
-{{
-  "batch_title": "A short evocative title for this batch",
-  "{rec_type}": [{{"url": "...", "reason": "..."}}],
-  "pairings": [{{"type": "quote|music|tip", "content": "...", "title": "optional link title", "url": "optional url"}}]
-}}"""
+{json_format}"""
 
         # Build allowed tools list from context sources
         allowed_tools = self._get_allowed_tools()
@@ -662,10 +676,15 @@ Output as JSON:
             full_response = "".join(response_text)
             parsed = self._parse_json(full_response)
 
-            recommendations = [
-                Recommendation(url=r.get("url", ""), reason=r.get("reason", ""))
-                for r in parsed.get(rec_type, [])
-            ]
+            # Collect recommendations from all requested types
+            all_recommendations = []
+            for t in types:
+                for r in parsed.get(t, []):
+                    all_recommendations.append({
+                        "url": r.get("url", ""),
+                        "reason": r.get("reason", ""),
+                        "type": t
+                    })
 
             # Extract batch_title and pairings
             batch_title = parsed.get("batch_title", "")
@@ -677,10 +696,7 @@ Output as JSON:
                 data={
                     "success": True,
                     "batch_title": batch_title,
-                    "recommendations": [
-                        {"url": r.url, "reason": r.reason, "type": rec_type}
-                        for r in recommendations
-                    ],
+                    "recommendations": all_recommendations,
                     "pairings": pairings
                 }
             )
@@ -714,6 +730,14 @@ Output as JSON:
                 Recommendation.from_dict(r, approach="divergent")
                 for r in data.get("divergent", [])
             ]
+            # Fallback: handle "recommendations" key (split evenly as convergent)
+            if not convergent and not divergent and "recommendations" in data:
+                all_recs = data.get("recommendations", [])
+                # Treat all as convergent if no explicit approach
+                convergent = [
+                    Recommendation.from_dict(r, approach="convergent")
+                    for r in all_recs
+                ]
             pairings = [
                 Pairing.from_dict(p)
                 for p in data.get("pairings", [])
@@ -854,16 +878,8 @@ Output as JSON:
             """Escape HTML special characters."""
             return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
-        # Get icons from config, with fallbacks
-        pairing_icons = {
-            "music": "🎵",
-            "exercise": "🏃",
-            "food": "🍽️",
-            "tip": "💡",
-            "quote": "📜",
-            "action": "🎯",
-        }
-        # Override with config icons if available
+        # Build icon lookup from config
+        pairing_icons = {}
         for p in self.types_config.pairings.values():
             if p.icon:
                 pairing_icons[p.name] = p.icon
@@ -874,7 +890,9 @@ Output as JSON:
         html_parts.append('<div class="pairings-grid">')
 
         for pairing in pairings:
-            icon = pairing_icons.get(pairing.type, "✨")
+            icon_name = pairing_icons.get(pairing.type, "")
+            # get_icon_html handles fallback automatically
+            icon_html = get_icon_html(icon_name) if icon_name else '<span class="pairing-icon-svg">&#10024;</span>'
             type_label = pairing.type.title()
             content = escape_html(pairing.content)
 
@@ -887,7 +905,7 @@ Output as JSON:
 
             html_parts.append(f'''
                 <article class="pairing-card pairing-{pairing.type}">
-                    <div class="pairing-icon">{icon}</div>
+                    <div class="pairing-icon">{icon_html}</div>
                     <div class="pairing-body">
                         <span class="pairing-type">{type_label}</span>
                         <p class="pairing-content">{content}</p>
@@ -936,16 +954,16 @@ Output as JSON:
         if result.pairings:
             parts.append("## Pairings")
             parts.append("")
-            pairing_icons = {
-                "music": "🎵",
-                "exercise": "🏃",
-                "food": "🍽️",
-                "tip": "💡",
-                "quote": "📜",
-                "action": "🎯",
-            }
+            # Build icon lookup from config
+            pairing_icons = {}
+            for p in self.types_config.pairings.values():
+                if p.icon:
+                    pairing_icons[p.name] = p.icon
+
             for pairing in result.pairings:
-                icon = pairing_icons.get(pairing.type, "✨")
+                icon_name = pairing_icons.get(pairing.type, "")
+                # get_icon_terminal handles fallback automatically
+                icon = get_icon_terminal(icon_name) if icon_name else "✨"
                 parts.append(f"### {icon} {pairing.type.title()}")
                 parts.append("")
                 parts.append(pairing.content)

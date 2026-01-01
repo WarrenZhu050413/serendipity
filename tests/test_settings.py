@@ -1,12 +1,84 @@
 """Tests for serendipity settings module."""
 
+import json
 import tempfile
 from pathlib import Path
 
+import jsonschema
 import pytest
 import yaml
 
 from serendipity import settings as settings_module
+
+
+class TestSettingsSchemaValidation:
+    """Tests that validate settings YAML against JSON schema."""
+
+    @pytest.fixture
+    def schema(self):
+        """Load the settings JSON schema."""
+        schema_path = (
+            Path(__file__).parent.parent
+            / "serendipity/config/defaults/settings.schema.json"
+        )
+        return json.loads(schema_path.read_text())
+
+    @pytest.fixture
+    def defaults_yaml(self):
+        """Load the default settings YAML."""
+        defaults_path = (
+            Path(__file__).parent.parent
+            / "serendipity/config/defaults/settings.yaml"
+        )
+        return yaml.safe_load(defaults_path.read_text())
+
+    def test_defaults_yaml_validates_against_schema(self, schema, defaults_yaml):
+        """Ensure defaults.yaml is valid according to the JSON schema."""
+        # This will raise ValidationError if invalid
+        jsonschema.validate(instance=defaults_yaml, schema=schema)
+
+    def test_schema_has_required_top_level_properties(self, schema):
+        """Ensure schema defines all expected top-level properties."""
+        props = schema["properties"]
+        expected = [
+            "version", "model", "total_count", "approaches", "media",
+            "context_sources", "pairings", "pairings_enabled", "output"
+        ]
+        for prop in expected:
+            assert prop in props, f"Schema missing top-level property: {prop}"
+
+    def test_schema_has_pairing_type_definition(self, schema):
+        """Ensure schema defines PairingType."""
+        assert "PairingType" in schema["definitions"]
+        pairing_type = schema["definitions"]["PairingType"]
+        expected_props = ["display_name", "enabled", "search_based", "icon", "prompt_hint"]
+        for prop in expected_props:
+            assert prop in pairing_type["properties"], f"PairingType missing: {prop}"
+
+    def test_defaults_has_all_media_types(self, defaults_yaml):
+        """Ensure defaults has the core media types."""
+        media = defaults_yaml.get("media", {})
+        expected = ["article", "youtube", "book", "podcast"]
+        for media_type in expected:
+            assert media_type in media, f"Defaults missing media type: {media_type}"
+
+    def test_defaults_has_all_pairings(self, defaults_yaml):
+        """Ensure defaults has the core pairing types."""
+        pairings = defaults_yaml.get("pairings", {})
+        expected = ["music", "food", "exercise", "tip", "quote", "action"]
+        for pairing in expected:
+            assert pairing in pairings, f"Defaults missing pairing: {pairing}"
+
+    def test_media_type_has_required_fields(self, defaults_yaml):
+        """Ensure each media type has required fields."""
+        for name, media in defaults_yaml.get("media", {}).items():
+            assert "display_name" in media, f"Media '{name}' missing display_name"
+
+    def test_pairing_has_required_fields(self, defaults_yaml):
+        """Ensure each pairing has required fields."""
+        for name, pairing in defaults_yaml.get("pairings", {}).items():
+            assert "display_name" in pairing, f"Pairing '{name}' missing display_name"
+            assert "icon" in pairing, f"Pairing '{name}' missing icon"
 
 
 class TestSettingsModule:

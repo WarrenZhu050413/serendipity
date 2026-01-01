@@ -156,3 +156,76 @@ gh issue reopen 123                   # Reopen if regression found
 - Before starting new work → existing issue?
 - When encountering a bug → was it reported before?
 - When something regresses → find the original fix
+
+---
+
+## Testing
+
+Tests use pytest with pytest-xdist for parallel execution (4 workers by default).
+
+### Running Tests
+
+```bash
+# Default: fast unit tests only (excludes e2e)
+uv run pytest
+
+# Run specific file
+uv run pytest tests/test_cli.py
+
+# Single worker (for debugging)
+uv run pytest -n 0
+
+# Include end-to-end tests (hits real APIs, slow)
+uv run pytest -m e2e
+
+# Run everything including e2e
+uv run pytest -m ""
+```
+
+### Test Categories
+
+| Marker | Description | When to Run |
+|--------|-------------|-------------|
+| (none) | Unit tests with mocks | Always (default) |
+| `e2e` | Real API calls, slow | Before releases, major changes |
+
+### Writing Tests
+
+**Unit tests** (default): Mock external dependencies like `SerendipityAgent`, `ContextSourceManager`, API calls. These run in <2 seconds total.
+
+**E2E tests** (`@pytest.mark.e2e`): Real API calls, real file I/O. Put in `tests/test_e2e.py`. These are skipped by default.
+
+```python
+# Unit test pattern
+def test_something(self):
+    with patch("serendipity.cli.SerendipityAgent") as mock:
+        mock.return_value.run_sync.return_value = mock_result
+        # ... test logic
+
+# E2E test pattern
+@pytest.mark.e2e
+def test_real_discover(self):
+    # No mocks - hits real Claude API
+    result = runner.invoke(app, ["discover", "test prompt", "-o", "json"])
+```
+
+### Common Fixtures
+
+Defined in `tests/conftest.py`:
+- `temp_dir` - Temporary directory
+- `temp_storage` - StorageManager with temp dir
+- `temp_storage_with_taste` - StorageManager with taste profile
+
+---
+
+## Icon System
+
+Icons are auto-discovered from `serendipity/static/icons/`. **Single source of truth**: the SVG files.
+
+### Adding a New Icon
+
+1. Download SVG from [lucide.dev](https://lucide.dev/icons/)
+2. Save to `serendipity/static/icons/<name>.svg`
+3. Use in settings: `icon: "<name>"`
+
+That's it. No code changes needed.
