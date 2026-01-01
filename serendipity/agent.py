@@ -175,14 +175,12 @@ class SerendipityAgent:
         self,
         context: str,
         context_augmentation: str = "",
-        style_guidance: str = "",
     ) -> DiscoveryResult:
         """Run discovery on user context.
 
         Args:
             context: User's context (text, links, instructions)
             context_augmentation: Additional context (preferences, history)
-            style_guidance: Style guidance for HTML output
 
         Returns:
             DiscoveryResult with recommendations (count from settings.total_count)
@@ -196,19 +194,19 @@ class SerendipityAgent:
         if context_augmentation:
             full_context_parts.append(context_augmentation)
         full_context_parts.append(f"<current_context>\n{context}\n</current_context>")
-        if style_guidance:
-            full_context_parts.append(style_guidance)
 
         full_context = "\n\n".join(full_context_parts)
 
-        # Build type guidance from config (includes total_count, approaches, media types)
+        # Build type guidance from config (approaches, media types, distribution)
         type_guidance = self.prompt_builder.build_type_guidance()
+        output_format = self.prompt_builder.build_output_schema()
 
         # Note: template_content and frontend_design are kept for backwards compatibility
         # with user-customized prompts that may still reference them
         prompt = self.prompt_template.format(
             user_context=full_context,
             type_guidance=type_guidance,
+            output_format=output_format,
             template_content=self.base_template,
             frontend_design=self.frontend_design,
         )
@@ -489,12 +487,16 @@ Output as JSON:
         # Extract recommendations JSON from <recommendations> tags
         rec_match = re.search(r"<recommendations>\s*(.*?)\s*</recommendations>", text, re.DOTALL)
         if rec_match:
+            rec_content = rec_match.group(1)
+            # Strip markdown code fences if present
+            code_match = re.search(r"```json?\s*(.*?)\s*```", rec_content, re.DOTALL)
+            if code_match:
+                rec_content = code_match.group(1)
             try:
-                data = json.loads(rec_match.group(1))
+                data = json.loads(rec_content)
                 result["convergent"], result["divergent"] = parse_recs(data)
             except json.JSONDecodeError:
-                self.console.print("[yellow]Warning: Could not parse recommendations JSON[/yellow]")
-                pass
+                pass  # Will fall through to legacy formats
 
         # Fallback: try legacy formats if no recommendations found
         if not result["convergent"] and not result["divergent"]:
@@ -597,6 +599,110 @@ Output as JSON:
         </div>''')
         return "\n".join(html_parts)
 
+    def render_markdown(self, result: DiscoveryResult) -> str:
+        """Render discovery result as markdown for email/chat.
+
+        Args:
+            result: DiscoveryResult with recommendations
+
+        Returns:
+            Markdown-formatted string with all recommendations
+        """
+        parts = []
+
+        # Header
+        parts.append("# Serendipity Discoveries")
+        parts.append("")
+
+        # Convergent recommendations
+        if result.convergent:
+            parts.append("## More Like This")
+            parts.append("")
+            for rec in result.convergent:
+                parts.append(self._format_recommendation_md(rec))
+            parts.append("")
+
+        # Divergent recommendations
+        if result.divergent:
+            parts.append("## Surprises")
+            parts.append("")
+            for rec in result.divergent:
+                parts.append(self._format_recommendation_md(rec))
+            parts.append("")
+
+        return "\n".join(parts)
+
+    def _format_recommendation_md(self, rec: Recommendation) -> str:
+        """Format a single recommendation as markdown.
+
+        Args:
+            rec: Recommendation to format
+
+        Returns:
+            Markdown string for this recommendation
+        """
+        lines = []
+
+        # Title or URL as heading
+        if rec.title:
+            lines.append(f"### [{rec.title}]({rec.url})")
+        else:
+            lines.append(f"### [{rec.url}]({rec.url})")
+
+        # Media type badge
+        media_label = rec.media_type.title() if rec.media_type else "Article"
+        lines.append(f"*{media_label}*")
+        lines.append("")
+
+        # Metadata if present
+        if rec.metadata:
+            meta_parts = []
+            for key, value in rec.metadata.items():
+                if value:
+                    meta_parts.append(f"**{key}:** {value}")
+            if meta_parts:
+                lines.append(" | ".join(meta_parts))
+                lines.append("")
+
+        # Reason
+        lines.append(rec.reason)
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def render_json(self, result: DiscoveryResult) -> str:
+        """Render discovery result as JSON for piping.
+
+        Args:
+            result: DiscoveryResult with recommendations
+
+        Returns:
+            JSON string with recommendations
+        """
+        output = {
+            "convergent": [
+                {
+                    "url": r.url,
+                    "title": r.title,
+                    "reason": r.reason,
+                    "media_type": r.media_type,
+                    "metadata": r.metadata,
+                }
+                for r in result.convergent
+            ],
+            "divergent": [
+                {
+                    "url": r.url,
+                    "title": r.title,
+                    "reason": r.reason,
+                    "media_type": r.media_type,
+                    "metadata": r.metadata,
+                }
+                for r in result.divergent
+            ],
+        }
+        return json.dumps(output, indent=2)
+
     def _parse_json(self, text: str) -> dict:
         """Extract JSON from response text (legacy method for get_more)."""
         # Try to find <recommendations> tags first (new format)
@@ -639,14 +745,12 @@ Output as JSON:
         self,
         context: str,
         context_augmentation: str = "",
-        style_guidance: str = "",
     ) -> DiscoveryResult:
         """Sync wrapper for discover.
 
         Args:
             context: User's context
             context_augmentation: Additional context (preferences, history)
-            style_guidance: Style guidance for HTML output
 
         Returns:
             DiscoveryResult
@@ -655,7 +759,6 @@ Output as JSON:
             self.discover(
                 context,
                 context_augmentation=context_augmentation,
-                style_guidance=style_guidance,
             )
         )
 

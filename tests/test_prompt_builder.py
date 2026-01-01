@@ -152,11 +152,13 @@ class TestPromptBuilder:
         """Test complete type guidance generation."""
         guidance = builder.build_type_guidance()
 
-        # Should contain all sections
+        # Should contain approach, media, and distribution sections
         assert "## APPROACH TYPES" in guidance
         assert "## MEDIA TYPES" in guidance
         assert "## DISTRIBUTION" in guidance
-        assert "## OUTPUT FORMAT" in guidance
+
+        # OUTPUT FORMAT is now separate (build_output_schema)
+        assert "## OUTPUT FORMAT" not in guidance
 
         # Should be properly joined with newlines
         assert "\n\n" in guidance
@@ -202,8 +204,8 @@ class TestPromptBuilderEdgeCases:
         assert "## APPROACH TYPES" in guidance
         assert "## MEDIA TYPES" in guidance
 
-    def test_media_without_sources(self):
-        """Test media type without search sources."""
+    def test_media_without_sources_uses_websearch_default(self):
+        """Test media type without sources gets WebSearch default."""
         config = TypesConfig(
             approaches={"test": ApproachType(name="test", display_name="Test")},
             media={"test": MediaType(name="test", display_name="Test", sources=[])},
@@ -211,8 +213,11 @@ class TestPromptBuilderEdgeCases:
         builder = PromptBuilder(config)
         section = builder.build_media_section()
 
-        # Should not crash, just skip search hints section
+        # Should use default WebSearch with media type name
         assert "Test" in section
+        assert "WebSearch" in section
+        # Default format is "- WebSearch: {media_name} {query}"
+        assert "test" in section  # media name in the hint
 
     def test_media_without_metadata_schema(self):
         """Test media type without metadata schema."""

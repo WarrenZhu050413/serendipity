@@ -52,11 +52,17 @@ class PromptBuilder:
             icon = MEDIA_ICONS.get(media.name, "📄")
             lines.append(f"### {icon} {media.display_name}")
 
-            # Add search sources
-            if media.sources:
+            # Add search sources (default to WebSearch if none specified)
+            sources = media.sources if media.sources else []
+            if not sources:
+                # Default search hint when no sources configured
                 lines.append("")
                 lines.append("**Search hints:**")
-                for source in media.sources:
+                lines.append(f"- WebSearch: {media.name} {{query}}")
+            else:
+                lines.append("")
+                lines.append("**Search hints:**")
+                for source in sources:
                     lines.append(f"- {source.tool}: {source.hints.strip()}")
 
             # Add prompt hint
@@ -100,8 +106,9 @@ class PromptBuilder:
         media_types = [m.name for m in self.config.get_enabled_media()]
 
         lines = ["## OUTPUT FORMAT", ""]
-        lines.append("Structure your recommendations as:")
+        lines.append("Wrap your recommendations JSON in <recommendations> tags:")
         lines.append("")
+        lines.append("<recommendations>")
         lines.append("```json")
         lines.append("{")
 
@@ -122,14 +129,14 @@ class PromptBuilder:
 
         lines.append("}")
         lines.append("```")
+        lines.append("</recommendations>")
         return "\n".join(lines)
 
     def build_type_guidance(self) -> str:
-        """Build the complete type guidance section for the prompt."""
+        """Build the type guidance section (approaches, media, distribution)."""
         sections = [
             self.build_approach_section(),
             self.build_media_section(),
             self.build_distribution_guidance(),
-            self.build_output_schema(),
         ]
         return "\n\n".join(sections)

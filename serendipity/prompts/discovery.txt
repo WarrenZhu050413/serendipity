@@ -16,8 +16,6 @@ You are a discovery engine. Your job is to find content recommendations that mat
    - Only WebFetch if you need to read content for context (e.g., user's linked URLs)
    - Never WebFetch just to "verify" a URL exists — trust search results
 
-3. **Document** your best finds in <verification_log>
-
 **Budget:** ~10-15 total searches max. Pick the most interesting finds from each.
 
 ## Your Task
@@ -39,19 +37,4 @@ If there's history context provided:
 
 {user_context}
 
-## Output
-
-Output your search log and recommendations:
-
-<verification_log>
-Search: "query you searched"
-→ Found: https://great-result.com — why it's interesting
-→ Found: https://another-good-one.com — brief note
-
-WebFetch: https://users-linked-url.com (only if user shared it)
-→ Key insights from the content
-</verification_log>
-
-<recommendations>
-(JSON as specified in OUTPUT FORMAT above)
-</recommendations>
+{output_format}

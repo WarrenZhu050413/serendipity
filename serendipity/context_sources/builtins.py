@@ -3,7 +3,6 @@
 These loaders are used by default in types.yaml:
 - file_loader: Reads a markdown file
 - history_loader: Builds history context
-- style_loader: Returns HTML styling guidance
 """
 
 from pathlib import Path
@@ -62,10 +61,6 @@ def history_loader(storage: "StorageManager", options: dict) -> tuple[str, list[
     include_unextracted = options.get("include_unextracted", True)
     warn_threshold = options.get("warn_threshold", 10000)
 
-    config = storage.load_config()
-    if not config.history_enabled:
-        return "", []
-
     parts = []
 
     # Learnings (extracted patterns)
@@ -117,20 +112,3 @@ def history_loader(storage: "StorageManager", options: dict) -> tuple[str, list[
         )
 
     return content, warnings
-
-
-def style_loader(storage: "StorageManager", options: dict) -> tuple[str, list[str]]:
-    """Load HTML styling guidance from config.
-
-    Returns:
-        (content, warnings)
-    """
-    config = storage.load_config()
-    if config.html_style:
-        content = f"Style the HTML output as: {config.html_style}"
-    else:
-        content = (
-            "Generate HTML styling that reflects the user's aesthetic taste "
-            "based on their preferences and the nature of the recommendations."
-        )
-    return content, []

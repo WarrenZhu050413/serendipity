@@ -20,6 +20,7 @@ from rich.table import Table
 from serendipity.agent import Recommendation, SerendipityAgent
 from serendipity.config.types import TypesConfig, context_from_storage
 from serendipity.context_sources import ContextSourceManager
+from serendipity.output_destinations import DestinationManager
 from serendipity.prompts.builder import PromptBuilder
 from serendipity.resources import (
     get_base_template,
@@ -86,10 +87,15 @@ def callback(
         help="Claude model (haiku, sonnet, opus) [overrides settings.yaml]",
     ),
     output_format: str = typer.Option(
-        "html",
-        "--output-format",
+        None,
+        "--format",
         "-o",
-        help="Output format: html (browser UI), terminal (stdout), json (structured)",
+        help="Output format: html (browser), markdown (text), json (structured) [default: from settings]",
+    ),
+    dest: str = typer.Option(
+        None,
+        "--dest",
+        help="Destination: browser, stdout, file, gmail, slack [default: from settings]",
     ),
     verbose: bool = typer.Option(
         False,
@@ -136,6 +142,7 @@ def callback(
             interactive=interactive,
             model=model,
             output_format=output_format,
+            dest=dest,
             verbose=verbose,
             enable_source=enable_source,
             disable_source=disable_source,
@@ -573,7 +580,7 @@ def set_settings_value(settings: dict, path: str, value) -> bool:
 
 
 # =============================================================================
-# Source handlers for profile get/edit
+# Source handlers for profile manage/edit
 # =============================================================================
 
 
@@ -656,7 +663,7 @@ def _handle_profile_learnings(
     if learnings_content.strip():
         console.print(Panel(learnings_content, title="Discovery Learnings", border_style="blue"))
     else:
-        console.print("[dim]No learnings yet. Run 'serendipity profile get learnings -i' to extract from history.[/dim]")
+        console.print("[dim]No learnings yet. Run 'serendipity profile manage learnings -i' to extract from history.[/dim]")
     console.print(f"\n[dim]Learnings file: {storage.learnings_path}[/dim]")
 
 
@@ -1050,10 +1057,15 @@ def discover_cmd(
         help="Claude model (haiku, sonnet, opus) [overrides settings.yaml]",
     ),
     output_format: str = typer.Option(
-        "html",
-        "--output-format",
+        None,
+        "--format",
         "-o",
-        help="Output format: html (browser UI), terminal (stdout), json (structured)",
+        help="Output format: html (browser), markdown (text), json (structured) [default: from settings]",
+    ),
+    dest: str = typer.Option(
+        None,
+        "--dest",
+        help="Destination: browser, stdout, file, gmail, slack [default: from settings]",
     ),
     verbose: bool = typer.Option(
         False,
@@ -1099,9 +1111,10 @@ def discover_cmd(
       [dim]$[/dim] serendipity notes.md                  [dim]# From file[/dim]
       [dim]$[/dim] serendipity -p                        [dim]# From clipboard[/dim]
       [dim]$[/dim] serendipity -i                        [dim]# Open editor[/dim]
-      [dim]$[/dim] serendipity -o terminal               [dim]# No browser[/dim]
+      [dim]$[/dim] serendipity -o json                   [dim]# JSON output[/dim]
+      [dim]$[/dim] serendipity --dest gmail              [dim]# Send via email[/dim]
       [dim]$[/dim] serendipity -s whorl                  [dim]# With Whorl knowledge base[/dim]
-      [dim]$[/dim] serendipity -d history                [dim]# Without history[/dim]
+      [dim]$[/dim] serendipity | jq '.convergent'        [dim]# Pipe to jq[/dim]
 
     [bold cyan]INPUT PRIORITY[/bold cyan] (highest to lowest):
       1. FILE_PATH argument (or '-' for explicit stdin)
@@ -1128,6 +1141,38 @@ def discover_cmd(
     max_thinking_tokens = thinking if thinking is not None else settings.thinking_tokens
     total_count = count if count is not None else settings.total_count
     server_port = port if port is not None else settings.feedback_server_port
+
+    # Resolve output format and destination
+    # Priority: CLI flag > pipe detection > settings default
+    is_piped = not sys.stdout.isatty()
+
+    if output_format is None:
+        if is_piped:
+            # Auto-detect: if piping, default to json
+            output_format = "json"
+        else:
+            output_format = settings.output.default_format
+
+    if dest is None:
+        if is_piped:
+            # Auto-detect: if piping, default to stdout
+            dest = "stdout"
+        else:
+            dest = settings.output.default_destination
+
+    # Handle legacy "terminal" format → "markdown" with stdout destination
+    if output_format == "terminal":
+        output_format = "markdown"
+        if dest is None:
+            dest = "stdout"
+
+    # Create destination manager
+    dest_manager = DestinationManager(settings.output, console)
+
+    # Check if destination requires a specific format
+    destination = dest_manager.get_destination(dest)
+    if destination and destination.get_format_override():
+        output_format = destination.get_format_override()
 
     # Get context from input sources
     context = _get_context(file_path, paste, interactive)
@@ -1246,8 +1291,19 @@ def discover_cmd(
     if history_enabled:
         _save_to_history(storage, result)
 
-    # Output based on format
-    if output_format == "html":
+    # Format content based on output_format
+    if output_format == "json":
+        formatted_content = agent.render_json(result)
+    elif output_format == "markdown":
+        formatted_content = agent.render_markdown(result)
+    elif output_format == "html":
+        formatted_content = None  # HTML is handled specially by browser destination
+    else:
+        console.print(error(f"Unknown output format: {output_format}"))
+        raise typer.Exit(code=1)
+
+    # Handle destination
+    if dest == "browser":
         # Require Claude to have written the HTML file
         if not result.html_path or not result.html_path.exists():
             console.print(error("Claude failed to write HTML file"))
@@ -1285,22 +1341,59 @@ def discover_cmd(
         except KeyboardInterrupt:
             console.print("\n[dim]Server stopped.[/dim]")
 
-    elif output_format == "terminal":
-        _display_terminal(result)
-    elif output_format == "json":
-        import json
+    elif dest == "stdout":
+        # Stdout destination - print formatted content directly
+        if formatted_content:
+            # Use sys.stdout for clean piping (no Rich formatting)
+            if is_piped:
+                sys.stdout.write(formatted_content)
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            else:
+                # Interactive mode - use Rich for nice formatting
+                if output_format == "json":
+                    console.print_json(formatted_content)
+                else:
+                    console.print(formatted_content)
 
-        output = {
-            "convergent": [{"url": r.url, "reason": r.reason} for r in result.convergent],
-            "divergent": [{"url": r.url, "reason": r.reason} for r in result.divergent],
-        }
-        console.print_json(json.dumps(output, indent=2))
+    elif dest == "file":
+        # File destination - just report where the file was saved
+        if result.html_path:
+            console.print(success(f"Saved to: {result.html_path}"))
+        else:
+            console.print(error("No file was generated"))
+
     else:
-        console.print(error(f"Unknown output format: {output_format}"))
-        raise typer.Exit(code=1)
+        # Plugin destinations (gmail, slack, etc.)
+        destination = dest_manager.get_destination(dest)
+        if not destination:
+            console.print(error(f"Unknown destination: {dest}"))
+            console.print("[dim]Available: " + ", ".join(dest_manager.get_enabled_destination_names()) + "[/dim]")
+            raise typer.Exit(code=1)
 
-    # Show cost (for non-HTML output)
-    if output_format != "html":
+        if not destination.enabled:
+            console.print(error(f"Destination {dest} is disabled"))
+            console.print(f"[dim]Enable in settings.yaml: output.destinations.{dest}.enabled: true[/dim]")
+            raise typer.Exit(code=1)
+
+        # Check destination readiness
+        ready, err_msg = destination.check_ready(console)
+        if not ready:
+            console.print(error(f"Destination {dest} not ready: {err_msg}"))
+            raise typer.Exit(code=1)
+
+        # Send to destination
+        send_result = asyncio.run(destination.send(formatted_content or "", result, console))
+        if send_result.success:
+            console.print(success(send_result.message))
+        else:
+            console.print(error(send_result.message))
+            for err in send_result.errors:
+                console.print(f"[dim]{err}[/dim]")
+            raise typer.Exit(code=1)
+
+    # Show cost (for non-browser destinations)
+    if dest != "browser" and not is_piped:
         if result.cost_usd:
             console.print(f"[dim]Cost: ${result.cost_usd:.4f}[/dim]")
 
@@ -2134,12 +2227,12 @@ def settings_style(
 
 
 # =============================================================================
-# New generic profile get/edit commands
+# New generic profile manage/edit commands
 # =============================================================================
 
 
-@profile_app.command("get")
-def profile_get(
+@profile_app.command("manage")
+def profile_manage(
     source_name: str = typer.Argument(..., help="Name of the context source"),
     # History-specific flags
     liked: bool = typer.Option(False, "--liked", help="[history] Show only liked items"),
@@ -2153,12 +2246,12 @@ def profile_get(
     """View or manage a context source.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity profile get taste              [dim]# View taste profile[/dim]
-      [dim]$[/dim] serendipity profile get history --liked    [dim]# View liked items[/dim]
-      [dim]$[/dim] serendipity profile get history -n 50      [dim]# View 50 recent items[/dim]
-      [dim]$[/dim] serendipity profile get learnings -i       [dim]# Interactive extraction[/dim]
-      [dim]$[/dim] serendipity profile get taste --clear      [dim]# Clear taste profile[/dim]
-      [dim]$[/dim] serendipity profile get whorl              [dim]# View MCP source config[/dim]
+      [dim]$[/dim] serendipity profile manage taste              [dim]# View taste profile[/dim]
+      [dim]$[/dim] serendipity profile manage history --liked    [dim]# View liked items[/dim]
+      [dim]$[/dim] serendipity profile manage history -n 50      [dim]# View 50 recent items[/dim]
+      [dim]$[/dim] serendipity profile manage learnings -i       [dim]# Interactive extraction[/dim]
+      [dim]$[/dim] serendipity profile manage taste --clear      [dim]# Clear taste profile[/dim]
+      [dim]$[/dim] serendipity profile manage whorl              [dim]# View MCP source config[/dim]
     """
     storage = StorageManager()
     storage.ensure_dirs()
@@ -2226,7 +2319,7 @@ def profile_edit(
     if source_config.type == "mcp":
         console.print(error(f"'{source_name}' is an MCP source (read-only)."))
         console.print("[dim]MCP sources fetch content from external servers and cannot be edited directly.[/dim]")
-        console.print(f"[dim]Use 'serendipity profile get {source_name}' to view its configuration.[/dim]")
+        console.print(f"[dim]Use 'serendipity profile manage {source_name}' to view its configuration.[/dim]")
         raise typer.Exit(1)
 
     is_editable, file_path = is_source_editable(source_config)

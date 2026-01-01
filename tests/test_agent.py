@@ -328,6 +328,28 @@ class TestParseResponse:
         assert rec.title == "Video Title"
         assert rec.metadata["channel"] == "TestChannel"
 
+    def test_parse_recommendations_with_markdown_code_fence(self, agent):
+        """Test parsing <recommendations> with markdown code fence inside.
+
+        This is the common case where the model wraps JSON in ```json blocks
+        within the recommendations tags.
+        """
+        text = """
+        <recommendations>
+        ```json
+        {
+            "convergent": [{"url": "https://example.com", "reason": "test"}],
+            "divergent": [{"url": "https://surprise.com", "reason": "unexpected"}]
+        }
+        ```
+        </recommendations>
+        """
+        result = agent._parse_response(text)
+        assert len(result["convergent"]) == 1
+        assert result["convergent"][0].url == "https://example.com"
+        assert len(result["divergent"]) == 1
+        assert result["divergent"][0].url == "https://surprise.com"
+
 
 class TestRenderRecommendations:
     """Tests for _render_recommendations method."""

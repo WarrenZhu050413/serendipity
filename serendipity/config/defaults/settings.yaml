@@ -12,6 +12,7 @@ version: 2
 model: opus
 total_count: 10
 feedback_server_port: 9876
+thinking_tokens: null  # Extended thinking budget (null=disabled, e.g., 10000)
 
 # APPROACHES - How to find recommendations
 approaches:
@@ -88,7 +89,51 @@ media:
         required: false
     # preference: "trying to listen more during commutes"
 
+# OUTPUT - Where and how to deliver recommendations
+# Separates format (how to render) from destination (where to send)
+output:
+  default_format: html        # json | markdown | html
+  default_destination: browser  # browser | stdout | file | gmail | slack
+
+  destinations:
+    browser:
+      type: builtin
+      enabled: true
+      description: "Open in browser with interactive UI"
+
+    stdout:
+      type: builtin
+      enabled: true
+      description: "Print to terminal"
+
+    file:
+      type: builtin
+      enabled: true
+      description: "Save to file only"
+      options:
+        path: "{profile_dir}/output/"
+
+    gmail:
+      type: command
+      enabled: true
+      description: "Send via Gmail CLI"
+      command: "gmail send-summary --to {to} --subject '{subject}'"
+      format: markdown  # override format for this destination
+      options:
+        to: ""  # default recipient (empty = prompt)
+        subject: "Serendipity: {date}"
+
+    slack:
+      type: webhook
+      enabled: false
+      description: "Post to Slack channel"
+      webhook_url: "${SLACK_WEBHOOK_URL}"  # env var
+      format: markdown
+      options:
+        channel: "#discoveries"
+
 # CONTEXT SOURCES - Where to get user profile/preferences
+# Template variables: {profile_dir}, {profile_name}, {home}
 context_sources:
   taste:
     type: loader
@@ -100,7 +145,7 @@ context_sources:
       {content}
       </persistent_taste>
     options:
-      path: ~/.serendipity/taste.md
+      path: "{profile_dir}/taste.md"
 
   learnings:
     type: loader
@@ -112,7 +157,7 @@ context_sources:
       {content}
       </discovery_learnings>
     options:
-      path: ~/.serendipity/learnings.md
+      path: "{profile_dir}/learnings.md"
 
   history:
     type: loader
@@ -128,15 +173,17 @@ context_sources:
       include_unextracted: true
       warn_threshold: 10000
 
-  style_guidance:
-    type: loader
-    enabled: true
-    description: "HTML styling preferences"
-    loader: serendipity.context_sources.builtins.style_loader
-    prompt_hint: |
-      <style_guidance>
-      {content}
-      </style_guidance>
+  # Example: Shell command source (uncomment to enable)
+  # my_notes:
+  #   type: command
+  #   enabled: true
+  #   description: "Load notes via shell command"
+  #   command: "cat ~/notes.md | head -100"
+  #   timeout: 30  # seconds (default: 30)
+  #   prompt_hint: |
+  #     <notes>
+  #     {content}
+  #     </notes>
 
   # MCP sources (disabled by default)
   whorl:
