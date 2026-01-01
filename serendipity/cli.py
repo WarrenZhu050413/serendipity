@@ -1006,7 +1006,7 @@ def _start_feedback_server(
                     entries.append(HistoryEntry(
                         url=rec_data.get("url", ""),
                         reason=rec_data.get("reason", ""),
-                        type=rec_type,
+                        type=rec_data.get("type", rec_type.split(",")[0]),  # Use type from rec or fallback
                         feedback=None,
                         timestamp=timestamp,
                         session_id=session_id,
@@ -2358,6 +2358,88 @@ def settings_style(
     console.print(f"\n[bold]Stylesheet[/bold]: {status}")
     console.print(f"[dim]Path: {storage.style_path}[/dim]")
     console.print(f"[dim]Edit: serendipity settings style --edit[/dim]")
+
+
+# =============================================================================
+# Profile build command - interactive taste profile builder
+# =============================================================================
+
+
+@profile_app.command("build")
+def profile_build_cmd(
+    thinking: int = typer.Option(
+        10000,
+        "--thinking",
+        "-t",
+        help="Extended thinking token budget",
+    ),
+    questions: int = typer.Option(
+        4,
+        "--questions",
+        "-q",
+        help="Number of questions per batch",
+    ),
+    options: int = typer.Option(
+        4,
+        "--options",
+        "-o",
+        help="Options per question (2-8)",
+    ),
+    verbose: bool = typer.Option(
+        True,
+        "--verbose/--quiet",
+        "-v/-V",
+        help="Show detailed progress including thinking (default: on)",
+    ),
+    reset: bool = typer.Option(
+        False,
+        "--reset",
+        help="Start fresh (ignore existing taste.md)",
+    ),
+    model: str = typer.Option(
+        "opus",
+        "--model",
+        "-m",
+        help="Claude model (haiku, sonnet, opus)",
+    ),
+) -> None:
+    """Build or improve your taste profile through guided Q&A.
+
+    Uses Claude with extended thinking to ask targeted questions about your
+    aesthetic sensibilities, then synthesizes your answers into an improved
+    taste.md profile.
+
+    The interview continues indefinitely - after each batch of questions,
+    choose to generate more or synthesize your profile.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile build              [dim]# Start building[/dim]
+      [dim]$[/dim] serendipity profile build -q 3 -o 3    [dim]# 3 questions, 3 options each[/dim]
+      [dim]$[/dim] serendipity profile build -t 20000     [dim]# More thinking budget[/dim]
+      [dim]$[/dim] serendipity profile build --reset      [dim]# Start from scratch[/dim]
+    """
+    from serendipity.profile_builder import ProfileBuilder
+
+    # Clamp options to reasonable range
+    options = max(2, min(8, options))
+
+    storage = StorageManager()
+    storage.ensure_dirs()
+
+    builder = ProfileBuilder(
+        console=console,
+        storage=storage,
+        model=model,
+        max_thinking_tokens=thinking,
+        verbose=verbose,
+    )
+
+    saved = builder.run_sync(
+        reset=reset,
+        questions_per_batch=questions,
+        max_options=options,
+    )
+    raise typer.Exit(0 if saved else 1)
 
 
 # =============================================================================
