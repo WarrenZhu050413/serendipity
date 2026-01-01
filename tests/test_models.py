@@ -1,8 +1,10 @@
 """Tests for serendipity.models."""
 
+import json
+
 import pytest
 
-from serendipity.models import HtmlStyle, Recommendation
+from serendipity.models import HtmlStyle, Recommendation, StatusEvent
 
 
 class TestRecommendation:
@@ -149,3 +151,101 @@ class TestHtmlStyle:
         style = HtmlStyle(description="Dark theme", css="body { background: #000; }")
         assert style.description == "Dark theme"
         assert style.css == "body { background: #000; }"
+
+
+class TestStatusEvent:
+    """Test StatusEvent dataclass for SSE streaming."""
+
+    def test_basic_creation(self):
+        """Test creating a status event with required fields."""
+        event = StatusEvent(event="status")
+        assert event.event == "status"
+        assert event.data == {}
+
+    def test_creation_with_data(self):
+        """Test creating a status event with data."""
+        event = StatusEvent(event="tool_use", data={"tool": "WebSearch", "query": "test"})
+        assert event.event == "tool_use"
+        assert event.data["tool"] == "WebSearch"
+        assert event.data["query"] == "test"
+
+    def test_to_sse_simple(self):
+        """Test to_sse with simple data."""
+        event = StatusEvent(event="status", data={"message": "Loading..."})
+        sse = event.to_sse()
+
+        assert sse.startswith("event: status\n")
+        assert "data: " in sse
+        assert sse.endswith("\n\n")
+
+        # Parse the data portion
+        lines = sse.strip().split("\n")
+        data_line = [l for l in lines if l.startswith("data: ")][0]
+        data_json = json.loads(data_line[6:])  # Skip "data: "
+        assert data_json["message"] == "Loading..."
+
+    def test_to_sse_tool_use(self):
+        """Test to_sse for tool_use event type."""
+        event = StatusEvent(
+            event="tool_use",
+            data={"tool": "WebSearch", "query": "python async", "message": "🔧 WebSearch \"python async\""},
+        )
+        sse = event.to_sse()
+
+        assert "event: tool_use\n" in sse
+
+        lines = sse.strip().split("\n")
+        data_line = [l for l in lines if l.startswith("data: ")][0]
+        data_json = json.loads(data_line[6:])
+        assert data_json["tool"] == "WebSearch"
+        assert data_json["query"] == "python async"
+        assert "🔧" in data_json["message"]
+
+    def test_to_sse_complete(self):
+        """Test to_sse for complete event with recommendations."""
+        recommendations = [
+            {"url": "https://example.com", "reason": "Test", "type": "article"},
+        ]
+        event = StatusEvent(event="complete", data={"recommendations": recommendations})
+        sse = event.to_sse()
+
+        assert "event: complete\n" in sse
+
+        lines = sse.strip().split("\n")
+        data_line = [l for l in lines if l.startswith("data: ")][0]
+        data_json = json.loads(data_line[6:])
+        assert "recommendations" in data_json
+        assert len(data_json["recommendations"]) == 1
+        assert data_json["recommendations"][0]["url"] == "https://example.com"
+
+    def test_to_sse_error(self):
+        """Test to_sse for error event."""
+        event = StatusEvent(event="error", data={"message": "Something went wrong"})
+        sse = event.to_sse()
+
+        assert "event: error\n" in sse
+
+        lines = sse.strip().split("\n")
+        data_line = [l for l in lines if l.startswith("data: ")][0]
+        data_json = json.loads(data_line[6:])
+        assert data_json["message"] == "Something went wrong"
+
+    def test_to_sse_empty_data(self):
+        """Test to_sse with empty data dict."""
+        event = StatusEvent(event="status")
+        sse = event.to_sse()
+
+        assert "event: status\n" in sse
+        assert "data: {}\n" in sse
+
+    def test_to_sse_format(self):
+        """Test that SSE format is correct per specification."""
+        event = StatusEvent(event="test", data={"key": "value"})
+        sse = event.to_sse()
+
+        # SSE format: event: <type>\ndata: <json>\n\n
+        lines = sse.split("\n")
+        assert lines[0] == "event: test"
+        assert lines[1].startswith("data: ")
+        assert lines[2] == ""  # Empty line after data
+        assert lines[3] == ""  # Second empty line (end of event)
