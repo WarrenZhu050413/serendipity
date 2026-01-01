@@ -31,7 +31,6 @@ from serendipity.resources import (
     get_base_template,
     get_default_style,
     get_discovery_prompt,
-    get_frontend_design,
     get_system_prompt,
 )
 
@@ -116,9 +115,6 @@ class SerendipityAgent:
             self.prompt_template = storage.get_prompt_path(
                 "discovery.txt", get_discovery_prompt()
             ).read_text()
-            self.frontend_design = storage.get_prompt_path(
-                "frontend_design.txt", get_frontend_design()
-            ).read_text()
             self.system_prompt = storage.get_prompt_path(
                 "system.txt", get_system_prompt()
             ).read_text()
@@ -126,7 +122,6 @@ class SerendipityAgent:
         else:
             # Fallback to package defaults (for tests without storage)
             self.prompt_template = get_discovery_prompt()
-            self.frontend_design = get_frontend_design()
             self.system_prompt = get_system_prompt()
             self.style_css = get_default_style()
 
@@ -202,14 +197,12 @@ class SerendipityAgent:
         type_guidance = self.prompt_builder.build_type_guidance()
         output_format = self.prompt_builder.build_output_schema()
 
-        # Note: template_content and frontend_design are kept for backwards compatibility
-        # with user-customized prompts that may still reference them
+        # Note: template_content kept for backwards compatibility with user-customized prompts
         prompt = self.prompt_template.format(
             user_context=full_context,
             type_guidance=type_guidance,
             output_format=output_format,
             template_content=self.base_template,
-            frontend_design=self.frontend_design,
         )
 
         # Build allowed tools list from context sources
@@ -566,9 +559,15 @@ Output as JSON:
 
         prompt = f"""Give me {count} more {type_description} recommendations, different from what you've already suggested.{feedback_context}{profile_update_context}{directives_context}
 
+Also:
+1. Create a thematic title for this batch (something evocative that captures the theme/mood)
+2. Suggest 2-3 contextual pairings (quote, music, or tip) that complement these recommendations
+
 Output as JSON:
 {{
-  "{rec_type}": [{{"url": "...", "reason": "..."}}]
+  "batch_title": "A short evocative title for this batch",
+  "{rec_type}": [{{"url": "...", "reason": "..."}}],
+  "pairings": [{{"type": "quote|music|tip", "content": "...", "title": "optional link title", "url": "optional url"}}]
 }}"""
 
         # Build allowed tools list from context sources
@@ -668,15 +667,21 @@ Output as JSON:
                 for r in parsed.get(rec_type, [])
             ]
 
-            # Yield completion event with recommendations
+            # Extract batch_title and pairings
+            batch_title = parsed.get("batch_title", "")
+            pairings = parsed.get("pairings", [])
+
+            # Yield completion event with recommendations, batch_title, and pairings
             yield StatusEvent(
                 event="complete",
                 data={
                     "success": True,
+                    "batch_title": batch_title,
                     "recommendations": [
                         {"url": r.url, "reason": r.reason, "type": rec_type}
                         for r in recommendations
-                    ]
+                    ],
+                    "pairings": pairings
                 }
             )
 

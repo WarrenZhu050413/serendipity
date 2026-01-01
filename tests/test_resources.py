@@ -9,7 +9,6 @@ from serendipity.resources import (
     get_default_config,
     get_default_settings_yaml,
     get_discovery_prompt,
-    get_frontend_design,
     get_loader_source_template,
     get_mcp_source_template,
     get_media_template,
@@ -68,7 +67,6 @@ class TestGetPrompt:
         assert "{user_context}" in prompt
         # Should have type guidance placeholder
         assert "{type_guidance}" in prompt
-        # Note: {template_content} and {frontend_design} removed (CSS now file-based)
 
     def test_get_discovery_prompt_convenience(self):
         """Test get_discovery_prompt convenience function."""
@@ -80,23 +78,6 @@ class TestGetPrompt:
         prompt1 = get_prompt("discovery.txt")
         prompt2 = get_prompt("discovery.txt")
         assert prompt1 == prompt2
-
-
-class TestGetFrontendDesign:
-    """Tests for get_frontend_design function."""
-
-    def test_get_frontend_design_returns_string(self):
-        """Test that get_frontend_design returns a string."""
-        design = get_frontend_design()
-        assert isinstance(design, str)
-        # May return empty string if file doesn't exist
-
-    def test_get_frontend_design_no_error_when_missing(self):
-        """Test that missing frontend design file doesn't raise error."""
-        # Should not raise, just return empty string
-        design = get_frontend_design()
-        # Either returns content or empty string
-        assert design is not None
 
 
 class TestGetDefaultConfig:

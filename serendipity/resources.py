@@ -47,14 +47,6 @@ def get_discovery_prompt() -> str:
     return get_prompt("discovery.txt")
 
 
-def get_frontend_design() -> str:
-    """Get the frontend design guidelines."""
-    try:
-        return get_prompt("frontend_design.txt")
-    except FileNotFoundError:
-        return ""
-
-
 def get_system_prompt() -> str:
     """Get the system prompt for the agent."""
     return get_prompt("system.txt")

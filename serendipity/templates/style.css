@@ -537,6 +537,73 @@ body {
 .history-item:hover .history-delete { opacity: 1; }
 .history-delete:hover { color: var(--error-color); }
 
+/* Preferences Section */
+.preferences-tabs {
+  display: flex;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.pref-tab {
+  flex: 1;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.pref-tab:hover {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.pref-tab.active {
+  background: var(--bg-input);
+  border-color: var(--accent-2);
+  color: var(--text-primary);
+}
+
+.preferences-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.pref-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg-input);
+  border-radius: var(--border-radius);
+  font-size: 0.8rem;
+}
+
+.pref-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.pref-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  padding: 0 var(--space-xs);
+}
+
+.pref-link:hover {
+  color: var(--accent-2);
+}
+
 .empty-state {
   padding: var(--space-md);
   text-align: center;
@@ -783,6 +850,125 @@ body {
 }
 
 .stat.liked { color: var(--success-color); }
+
+/* Card Search Bar */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-left: auto;
+}
+
+.search-bar input {
+  padding: var(--space-xs) var(--space-sm);
+  font-family: var(--font-system);
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  width: 160px;
+  transition: all var(--transition-fast);
+}
+
+.search-bar input:focus {
+  outline: none;
+  border-color: var(--accent-2);
+  width: 200px;
+}
+
+.search-bar input::placeholder {
+  color: var(--text-muted);
+}
+
+.search-results {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  min-width: 40px;
+}
+
+/* ========================================
+   Search History (SSE tool_use log)
+   ======================================== */
+.search-history {
+  display: none;
+  margin-bottom: var(--space-md);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  overflow: hidden;
+}
+
+.search-history.visible {
+  display: block;
+}
+
+.search-history-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-input);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background var(--transition-fast);
+}
+
+.search-history-header:hover {
+  background: var(--border-color);
+}
+
+.search-count {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.expand-icon {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.search-history-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height var(--transition-fast);
+}
+
+.search-history-content.expanded {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--space-sm);
+  border-top: 1px solid var(--border-color);
+}
+
+.search-item {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-xs) 0;
+  font-size: 0.8rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.search-item:last-child {
+  border-bottom: none;
+}
+
+.search-tool {
+  font-weight: 500;
+  color: var(--accent-2);
+  min-width: 80px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.search-query {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
 
 /* ========================================
    Discovery Grid
@@ -1085,6 +1271,49 @@ body {
 
 .pairing-link:hover {
   text-decoration: underline;
+}
+
+/* New pairing highlight */
+.pairing-card.new-pairing {
+  animation: pairingFadeIn 0.5s ease-out;
+  box-shadow: 0 0 0 2px var(--accent-2), 0 2px 8px rgba(123, 163, 163, 0.2);
+}
+
+@keyframes pairingFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========================================
+   Batch Dividers
+   ======================================== */
+.batch-divider {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: var(--space-sm);
+}
+
+.batch-title {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: 1.1rem;
+  color: var(--text-primary);
+}
+
+.batch-time {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-left: auto;
 }
 
 /* ========================================

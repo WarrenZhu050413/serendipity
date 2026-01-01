@@ -118,6 +118,25 @@ Customize styling with: serendipity settings style --edit
                             </div>
                         </div>
 
+                        <!-- Preferences Section -->
+                        <div class="source-section" data-source="preferences">
+                            <div class="source-header" onclick="toggleSource(this)">
+                                <div class="source-info">
+                                    <span class="source-status"></span>
+                                    <span class="source-name">preferences</span>
+                                    <span class="source-type">feedback</span>
+                                </div>
+                                <span class="source-meta" id="preferences-count">0 items</span>
+                            </div>
+                            <div class="source-content">
+                                <div class="preferences-tabs">
+                                    <button class="pref-tab active" data-pref="liked" onclick="switchPrefTab('liked')">👍 Liked</button>
+                                    <button class="pref-tab" data-pref="disliked" onclick="switchPrefTab('disliked')">👎 Disliked</button>
+                                </div>
+                                <div class="preferences-list" id="preferences-list"></div>
+                            </div>
+                        </div>
+
                         <!-- Context Sources (MCP etc) -->
                         <div class="source-section" data-source="sources">
                             <div class="source-header" onclick="toggleSource(this)">
@@ -228,6 +247,10 @@ Customize styling with: serendipity settings style --edit
                         <div class="stat">Shown: <span id="stat-shown">0</span></div>
                         <div class="stat liked">👍 <span id="stat-liked">0</span></div>
                         <div class="stat">👎 <span id="stat-disliked">0</span></div>
+                        <div class="search-bar">
+                            <input type="text" id="card-search" placeholder="🔍 Filter cards..." oninput="filterCards()">
+                            <span class="search-results" id="search-results"></span>
+                        </div>
                     </div>
                     <div class="directives-row">
                         <input type="text" class="directives-input" id="directives-input" placeholder="Custom directives (e.g., 'more philosophy', 'avoid podcasts') - Press Enter to load more">
@@ -238,6 +261,18 @@ Customize styling with: serendipity settings style --edit
                             </svg>
                             Another Round
                         </button>
+                    </div>
+                </div>
+
+                <!-- Search History (expandable, shows during Another Round) -->
+                <div class="search-history" id="search-history">
+                    <div class="search-history-header" onclick="toggleSearchHistory()">
+                        <span>🔍 Search Activity</span>
+                        <span class="search-count" id="search-count">0 searches</span>
+                        <span class="expand-icon" id="search-expand-icon">▼</span>
+                    </div>
+                    <div class="search-history-content" id="search-history-content">
+                        <!-- Populated by SSE events -->
                     </div>
                 </div>
 
@@ -497,6 +532,49 @@ Customize styling with: serendipity settings style --edit
                     <button class="history-delete" title="Remove" onclick="deleteHistory('${encodeURIComponent(h.url)}')">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
+                </div>
+            `).join('');
+
+            // Also render preferences from the same data
+            renderPreferences(history);
+        }
+
+        // Store all history for filtering
+        let allHistoryData = [];
+        let currentPrefTab = 'liked';
+
+        function renderPreferences(history) {
+            allHistoryData = history;
+            const liked = history.filter(h => h.feedback === 'liked');
+            const disliked = history.filter(h => h.feedback === 'disliked');
+
+            document.getElementById('preferences-count').textContent =
+                `${liked.length} 👍 / ${disliked.length} 👎`;
+
+            updatePreferencesList();
+        }
+
+        function switchPrefTab(tab) {
+            currentPrefTab = tab;
+            document.querySelectorAll('.pref-tab').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.pref === tab);
+            });
+            updatePreferencesList();
+        }
+
+        function updatePreferencesList() {
+            const list = document.getElementById('preferences-list');
+            const filtered = allHistoryData.filter(h => h.feedback === currentPrefTab);
+
+            if (filtered.length === 0) {
+                list.innerHTML = `<div class="empty-state">No ${currentPrefTab} items yet</div>`;
+                return;
+            }
+
+            list.innerHTML = filtered.map(h => `
+                <div class="pref-item">
+                    <span class="pref-title">${escapeHtml(h.title || h.url)}</span>
+                    <a class="pref-link" href="${escapeHtml(h.url)}" target="_blank" title="Open">↗</a>
                 </div>
             `).join('');
         }
@@ -812,11 +890,23 @@ Customize styling with: serendipity settings style --edit
                 case 'tool_use':
                     // Show tool use message (WebSearch, etc.)
                     loadingDetails.textContent = data.message;
+                    // Add to search history
+                    addSearchHistoryItem(data);
                     break;
 
                 case 'complete':
                     // Handle completed recommendations
                     if (data.success && data.recommendations && data.recommendations.length > 0) {
+                        // Render batch title divider if present
+                        if (data.batch_title) {
+                            renderBatchTitle(data.batch_title);
+                        }
+
+                        // Render pairings if present
+                        if (data.pairings && data.pairings.length > 0) {
+                            renderNewPairings(data.pairings);
+                        }
+
                         // Reverse so newest appears first when prepending
                         const recs = [...data.recommendations].reverse();
                         recs.forEach((rec, idx) => {
@@ -854,6 +944,9 @@ Customize styling with: serendipity settings style --edit
 
             btn.disabled = true;
             loading.classList.add('visible');
+
+            // Clear previous search history
+            clearSearchHistory();
 
             // Build informative loading message
             const directives = directivesInput.value.trim();
@@ -1014,10 +1107,160 @@ Customize styling with: serendipity settings style --edit
             return div.innerHTML;
         }
 
+        // =============================================================
+        // BATCH TITLES & PAIRINGS
+        // =============================================================
+        function renderBatchTitle(title) {
+            const grid = document.getElementById('recommendations');
+            const divider = document.createElement('div');
+            divider.className = 'batch-divider';
+            divider.innerHTML = `
+                <span class="batch-title">${escapeHtml(title)}</span>
+                <span class="batch-time">${new Date().toLocaleTimeString()}</span>
+            `;
+            grid.prepend(divider);
+        }
+
+        function renderNewPairings(pairings) {
+            // Find or create the pairings section
+            let pairingsSection = document.querySelector('.pairings-section');
+            let pairingsGrid;
+
+            if (!pairingsSection) {
+                // Create new pairings section
+                pairingsSection = document.createElement('section');
+                pairingsSection.className = 'pairings-section';
+                pairingsSection.innerHTML = `
+                    <h2 class="pairings-title">Pairings</h2>
+                    <div class="pairings-grid"></div>
+                `;
+                const grid = document.getElementById('recommendations');
+                grid.parentNode.insertBefore(pairingsSection, grid);
+            }
+
+            pairingsGrid = pairingsSection.querySelector('.pairings-grid');
+
+            // Pairing icons
+            const icons = {
+                'music': '🎵',
+                'exercise': '🏃',
+                'food': '🍽️',
+                'tip': '💡',
+                'quote': '📜',
+                'action': '🎯'
+            };
+
+            // Add new pairings to the front
+            pairings.reverse().forEach(p => {
+                const card = document.createElement('article');
+                const pType = p.type || 'tip';
+                card.className = `pairing-card pairing-${pType} new-pairing`;
+                const icon = icons[pType] || '✨';
+                const typeLabel = pType.charAt(0).toUpperCase() + pType.slice(1);
+
+                let linkHtml = '';
+                if (p.url) {
+                    const title = p.title || p.url;
+                    linkHtml = `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener" class="pairing-link">${escapeHtml(title)}</a>`;
+                }
+
+                card.innerHTML = `
+                    <div class="pairing-icon">${icon}</div>
+                    <div class="pairing-body">
+                        <span class="pairing-type">${typeLabel}</span>
+                        <p class="pairing-content">${escapeHtml(p.content || '')}</p>
+                        ${linkHtml}
+                    </div>
+                `;
+                pairingsGrid.prepend(card);
+            });
+        }
+
+        // =============================================================
+        // SEARCH HISTORY
+        // =============================================================
+        let searchHistoryCount = 0;
+        let searchHistoryExpanded = false;
+
+        function toggleSearchHistory() {
+            searchHistoryExpanded = !searchHistoryExpanded;
+            const content = document.getElementById('search-history-content');
+            const icon = document.getElementById('search-expand-icon');
+            content.classList.toggle('expanded', searchHistoryExpanded);
+            icon.textContent = searchHistoryExpanded ? '▲' : '▼';
+        }
+
+        function addSearchHistoryItem(data) {
+            const container = document.getElementById('search-history');
+            const content = document.getElementById('search-history-content');
+            const countSpan = document.getElementById('search-count');
+
+            // Show the container if hidden
+            container.classList.add('visible');
+
+            // Create the history item
+            const item = document.createElement('div');
+            item.className = 'search-item';
+
+            // Parse the tool and query from the message
+            const tool = data.tool || 'Unknown';
+            const query = data.query || data.url || data.message || '';
+
+            item.innerHTML = `
+                <span class="search-tool">${escapeHtml(tool)}</span>
+                <span class="search-query">${escapeHtml(query)}</span>
+            `;
+            content.appendChild(item);
+
+            // Update count
+            searchHistoryCount++;
+            countSpan.textContent = `${searchHistoryCount} search${searchHistoryCount !== 1 ? 'es' : ''}`;
+        }
+
+        function clearSearchHistory() {
+            const content = document.getElementById('search-history-content');
+            const container = document.getElementById('search-history');
+            content.innerHTML = '';
+            searchHistoryCount = 0;
+            document.getElementById('search-count').textContent = '0 searches';
+            container.classList.remove('visible');
+        }
+
+        // =============================================================
+        // CARD SEARCH/FILTER
+        // =============================================================
+        function filterCards() {
+            const query = document.getElementById('card-search').value.toLowerCase().trim();
+            const cards = document.querySelectorAll('.discovery-card');
+            let visible = 0;
+
+            cards.forEach(card => {
+                if (!query) {
+                    card.style.display = '';
+                    visible++;
+                    return;
+                }
+
+                const title = card.querySelector('.card-title')?.textContent.toLowerCase() || '';
+                const description = card.querySelector('.card-description')?.textContent.toLowerCase() || '';
+                const tags = card.querySelector('.card-tags')?.textContent.toLowerCase() || '';
+                const matches = title.includes(query) || description.includes(query) || tags.includes(query);
+
+                card.style.display = matches ? '' : 'none';
+                if (matches) visible++;
+            });
+
+            const resultsSpan = document.getElementById('search-results');
+            resultsSpan.textContent = query ? `${visible}/${cards.length}` : '';
+        }
+
         // Expose functions needed by inline onclick handlers
         window.requestMore = requestMore;
         window.toggleSource = toggleSource;
         window.recordFeedback = recordFeedback;
+        window.filterCards = filterCards;
+        window.switchPrefTab = switchPrefTab;
+        window.toggleSearchHistory = toggleSearchHistory;
     </script>
 </body>
 </html>

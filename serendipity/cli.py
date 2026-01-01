@@ -26,7 +26,6 @@ from serendipity.resources import (
     get_base_template,
     get_default_style,
     get_discovery_prompt,
-    get_frontend_design,
     get_system_prompt,
 )
 
@@ -1624,7 +1623,6 @@ def settings_callback(
     console.print("\n[bold]Prompts[/bold] (agent instructions):")
     prompt_files = {
         "discovery": ("discovery.txt", get_discovery_prompt),
-        "frontend_design": ("frontend_design.txt", get_frontend_design),
         "system": ("system.txt", get_system_prompt),
     }
     for name, (filename, default_getter) in prompt_files.items():
@@ -2161,7 +2159,6 @@ def _add_pairing_interactive() -> None:
 
 VALID_PROMPTS = {
     "discovery": ("discovery.txt", get_discovery_prompt),
-    "frontend_design": ("frontend_design.txt", get_frontend_design),
     "system": ("system.txt", get_system_prompt),
 }
 
@@ -2172,7 +2169,7 @@ def settings_prompts(
         None,
         "--edit",
         "-e",
-        help="Edit a prompt in $EDITOR (discovery, frontend_design, system)",
+        help="Edit a prompt in $EDITOR (discovery, system)",
     ),
     reset: Optional[str] = typer.Option(
         None,
@@ -2193,9 +2190,8 @@ def settings_prompts(
     Edit them to customize the agent's behavior.
 
     [bold cyan]PROMPTS[/bold cyan]:
-      discovery       - Main instructions for finding content
-      frontend_design - CSS generation guidelines
-      system          - Core system prompt (search behavior)
+      discovery - Main instructions for finding content
+      system    - Core system prompt (search behavior)
 
     [bold cyan]EXAMPLES[/bold cyan]:
       [dim]$[/dim] serendipity settings prompts                    [dim]# List all prompts[/dim]
