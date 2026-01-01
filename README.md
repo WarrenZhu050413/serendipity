@@ -2,6 +2,8 @@
 
 A personal discovery engine to find content you'll love. Uses Claude for discovery, with an extensible configuration system for both your personal profile and the types of recommendations you want.
 
+![Serendipity Interface](screenshot.png)
+
 ### 1. Extensible Context Sources
 
 Context sources define what Claude knows about you. They can be:
