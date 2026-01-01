@@ -1,6 +1,6 @@
 [project]
 name = "serendipity"
-version = "0.3.0"
+version = "0.3.1"
 description = "Personal Serendipity Engine - discover convergent and divergent content recommendations"
 authors = [
     {name = "Warren Zhu", email = "wzhu@college.harvard.edu"}
@@ -51,13 +51,15 @@ dev = [
     "pytest-cov>=4.0.0",
     "pytest-asyncio>=0.21.0",
     "ruff>=0.1.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = ["-v", "--strict-markers", "--tb=short"]
-asyncio_mode = "auto"
+addopts = ["-n", "4", "--strict-markers", "--tb=short"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

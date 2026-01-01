@@ -977,10 +977,51 @@ def _start_feedback_server(
             traceback.print_exc()
             raise
 
+    async def on_more_stream_request(
+        session_id: str,
+        rec_type: str,
+        count: int,
+        session_feedback: list = None,
+        profile_diffs: dict = None,
+        custom_directives: str = "",
+    ):
+        """Handle streaming 'more' requests with SSE. Yields StatusEvent objects."""
+        from serendipity.models import StatusEvent
+
+        console.print(f"[dim]Getting {count} more {rec_type} recommendations (streaming)...[/dim]")
+
+        # Collect recommendations for history
+        recommendations = []
+
+        async for event in agent.get_more_stream(
+            session_id, rec_type, count, session_feedback, profile_diffs, custom_directives
+        ):
+            # Log tool use events to console
+            if event.event == "tool_use":
+                console.print(f"[dim]{event.data.get('message', '')}[/dim]")
+            elif event.event == "complete":
+                # Save to history when complete
+                entries = []
+                timestamp = datetime.now().isoformat()
+                for rec_data in event.data.get("recommendations", []):
+                    entries.append(HistoryEntry(
+                        url=rec_data.get("url", ""),
+                        reason=rec_data.get("reason", ""),
+                        type=rec_type,
+                        feedback=None,
+                        timestamp=timestamp,
+                        session_id=session_id,
+                    ))
+                if entries:
+                    storage.append_history(entries)
+
+            yield event
+
     async def run_server():
         server = FeedbackServer(
             storage=storage,
             on_more_request=on_more_request,
+            on_more_stream_request=on_more_stream_request,
             idle_timeout=600,  # 10 minutes
             html_content=html_content,
             static_dir=static_dir,

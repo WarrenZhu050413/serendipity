@@ -25,7 +25,7 @@ from rich.console import Console
 
 from serendipity.config.types import TypesConfig
 from serendipity.display import AgentDisplay, DisplayConfig
-from serendipity.models import HtmlStyle, Pairing, Recommendation
+from serendipity.models import HtmlStyle, Pairing, Recommendation, StatusEvent
 from serendipity.prompts.builder import PromptBuilder
 from serendipity.resources import (
     get_base_template,
@@ -484,6 +484,208 @@ Output as JSON:
             Recommendation(url=r.get("url", ""), reason=r.get("reason", ""))
             for r in parsed.get(rec_type, [])
         ]
+
+    async def get_more_stream(
+        self,
+        session_id: str,
+        rec_type: str,
+        count: int = 5,
+        session_feedback: list[dict] = None,
+        profile_diffs: dict[str, str] = None,
+        custom_directives: str = "",
+    ):
+        """Get more recommendations with SSE streaming status updates.
+
+        Yields StatusEvent objects that can be sent via SSE to show
+        real-time progress (WebSearch calls, etc.) to the browser.
+
+        Args:
+            session_id: Session ID to resume
+            rec_type: Type of recommendations ("convergent" or "divergent")
+            count: Number of additional recommendations
+            session_feedback: Feedback from current session
+            profile_diffs: Dict of {section_name: diff_text} for profile changes
+            custom_directives: User's custom instructions for this batch
+
+        Yields:
+            StatusEvent objects for SSE streaming
+        """
+        from typing import AsyncGenerator
+
+        type_description = (
+            "convergent (matching their taste directly)"
+            if rec_type == "convergent"
+            else "divergent (expanding their palette)"
+        )
+
+        # Yield initial status
+        yield StatusEvent(
+            event="status",
+            data={"message": f"Getting {count} {rec_type} recommendations..."}
+        )
+
+        # Build feedback context
+        feedback_context = ""
+        if session_feedback:
+            liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
+            disliked = [f["url"] for f in session_feedback if f.get("feedback") == "disliked"]
+            if liked or disliked:
+                yield StatusEvent(
+                    event="status",
+                    data={"message": f"With {len(session_feedback)} feedback items"}
+                )
+            if liked:
+                feedback_context += "\n\nFrom this session, the user LIKED:\n" + "\n".join(f"- {u}" for u in liked)
+            if disliked:
+                feedback_context += "\n\nFrom this session, the user DISLIKED:\n" + "\n".join(f"- {u}" for u in disliked)
+            if feedback_context:
+                feedback_context += "\n\nUse this feedback to refine your next recommendations."
+
+        # Build profile update context
+        profile_update_context = ""
+        if profile_diffs:
+            profile_update_context = "\n\n<user_update>\n"
+            for section_name, diff_text in profile_diffs.items():
+                profile_update_context += f"<{section_name}>\n{diff_text}\n</{section_name}>\n"
+            profile_update_context += "</user_update>\n\nThe user has updated their profile. Consider these changes when making recommendations."
+            yield StatusEvent(
+                event="status",
+                data={"message": "With profile updates"}
+            )
+
+        # Build custom directives context
+        directives_context = ""
+        if custom_directives and custom_directives.strip():
+            directives_context = f"\n\n<user_directives>\n{custom_directives.strip()}\n</user_directives>\n\nFollow these custom directives from the user for this batch of recommendations."
+            # Truncate for display
+            display_text = custom_directives[:50] + ("..." if len(custom_directives) > 50 else "")
+            yield StatusEvent(
+                event="status",
+                data={"message": f'Directives: "{display_text}"'}
+            )
+
+        prompt = f"""Give me {count} more {type_description} recommendations, different from what you've already suggested.{feedback_context}{profile_update_context}{directives_context}
+
+Output as JSON:
+{{
+  "{rec_type}": [{{"url": "...", "reason": "..."}}]
+}}"""
+
+        # Build allowed tools list from context sources
+        allowed_tools = self._get_allowed_tools()
+
+        mcp_servers = self._get_mcp_servers()
+        options = ClaudeAgentOptions(
+            model=self.model,
+            system_prompt="You are a discovery engine.",
+            max_turns=50,
+            allowed_tools=allowed_tools,
+            mcp_servers=mcp_servers if mcp_servers else None,
+            resume=session_id,
+            max_thinking_tokens=self.max_thinking_tokens,
+        )
+
+        response_text = []
+        new_session_id = ""
+        cost_usd = None
+
+        try:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+
+                async for msg in client.receive_response():
+                    if isinstance(msg, SystemMessage) and msg.subtype == "init":
+                        data = msg.data
+                        logger.info(
+                            "SDK resumed (streaming)",
+                            plugins=[p.get("name") for p in data.get("plugins", [])],
+                            mcp_servers=data.get("mcp_servers", []),
+                        )
+
+                    elif isinstance(msg, AssistantMessage):
+                        for block in msg.content:
+                            if isinstance(block, ThinkingBlock):
+                                # Don't stream thinking to reduce noise
+                                pass
+
+                            elif isinstance(block, ToolUseBlock):
+                                # Stream tool use events
+                                tool_name = block.name
+                                tool_input = block.input or {}
+
+                                # Format tool use for display
+                                if tool_name == "WebSearch":
+                                    query = tool_input.get("query", "")
+                                    yield StatusEvent(
+                                        event="tool_use",
+                                        data={
+                                            "tool": tool_name,
+                                            "query": query,
+                                            "message": f'🔧 WebSearch "{query}"'
+                                        }
+                                    )
+                                elif tool_name == "WebFetch":
+                                    url = tool_input.get("url", "")
+                                    yield StatusEvent(
+                                        event="tool_use",
+                                        data={
+                                            "tool": tool_name,
+                                            "url": url,
+                                            "message": f'🔧 WebFetch "{url[:60]}..."'
+                                        }
+                                    )
+                                else:
+                                    yield StatusEvent(
+                                        event="tool_use",
+                                        data={
+                                            "tool": tool_name,
+                                            "message": f"🔧 {tool_name}"
+                                        }
+                                    )
+
+                            elif isinstance(block, ToolResultBlock):
+                                # Just note that result was received, don't stream content
+                                pass
+
+                            elif isinstance(block, TextBlock):
+                                response_text.append(block.text)
+
+                    elif isinstance(msg, ResultMessage):
+                        new_session_id = msg.session_id
+                        cost_usd = msg.total_cost_usd
+
+            # Update session and cost
+            self.last_session_id = new_session_id
+            if cost_usd:
+                self.cost_usd = (self.cost_usd or 0) + cost_usd
+
+            # Parse JSON from response
+            full_response = "".join(response_text)
+            parsed = self._parse_json(full_response)
+
+            recommendations = [
+                Recommendation(url=r.get("url", ""), reason=r.get("reason", ""))
+                for r in parsed.get(rec_type, [])
+            ]
+
+            # Yield completion event with recommendations
+            yield StatusEvent(
+                event="complete",
+                data={
+                    "success": True,
+                    "recommendations": [
+                        {"url": r.url, "reason": r.reason, "type": rec_type}
+                        for r in recommendations
+                    ]
+                }
+            )
+
+        except Exception as e:
+            logger.error("get_more_stream error", error=str(e))
+            yield StatusEvent(
+                event="error",
+                data={"error": str(e)}
+            )
 
     def _parse_response(self, text: str) -> dict:
         """Extract recommendations and pairings from response text.

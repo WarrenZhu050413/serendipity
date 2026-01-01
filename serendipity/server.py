@@ -32,6 +32,7 @@ class FeedbackServer:
         self,
         storage: StorageManager,
         on_more_request: Optional[Callable] = None,
+        on_more_stream_request: Optional[Callable] = None,
         idle_timeout: int = 600,  # 10 minutes
         html_content: Optional[str] = None,
         static_dir: Optional[Path] = None,
@@ -44,12 +45,15 @@ class FeedbackServer:
                 (session_id, type, count, session_feedback, profile_diffs, custom_directives).
                 - profile_diffs: Optional dict of {section_name: diff_text} for profile changes
                 - custom_directives: Optional string with user's custom instructions for this batch
+            on_more_stream_request: Callback for streaming "more" requests. Returns an async
+                generator that yields StatusEvent objects for SSE streaming.
             idle_timeout: Seconds of inactivity before auto-shutdown
             html_content: Optional HTML content to serve at / (legacy mode)
             static_dir: Optional directory to serve static files from
         """
         self.storage = storage
         self.on_more_request = on_more_request
+        self.on_more_stream_request = on_more_stream_request
         self.idle_timeout = idle_timeout
         self.html_content = html_content
         self.static_dir = static_dir
@@ -78,10 +82,12 @@ class FeedbackServer:
         self._app = web.Application()
         self._app.router.add_post("/feedback", self._handle_feedback)
         self._app.router.add_post("/more", self._handle_more)
+        self._app.router.add_post("/more/stream", self._handle_more_stream)
         self._app.router.add_get("/health", self._handle_health)
         self._app.router.add_get("/context", self._handle_context)
         self._app.router.add_options("/feedback", self._handle_cors)
         self._app.router.add_options("/more", self._handle_cors)
+        self._app.router.add_options("/more/stream", self._handle_cors)
         self._app.router.add_options("/context", self._handle_cors)
 
         # API endpoints for profile/settings management
@@ -432,6 +438,87 @@ class FeedbackServer:
                 status=500,
                 headers=self._cors_headers(),
             )
+
+    async def _handle_more_stream(self, request: web.Request) -> web.StreamResponse:
+        """Handle 'more' requests with SSE streaming for live status updates.
+
+        Expected JSON body: Same as /more endpoint.
+
+        Returns SSE stream with events:
+        - status: General status messages
+        - tool_use: Tool calls (WebSearch, etc.)
+        - complete: Final result with recommendations
+        - error: Error occurred
+        """
+        self._update_activity()
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response(
+                {"error": "Invalid JSON"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        session_id = data.get("session_id")
+        rec_type = data.get("type")
+        count = data.get("count", 5)
+        session_feedback = data.get("session_feedback", [])
+        profile_diffs = data.get("profile_diffs")
+        custom_directives = data.get("custom_directives", "")
+
+        if not all([session_id, rec_type]):
+            return web.json_response(
+                {"error": "Missing required fields: session_id, type"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        if rec_type not in ("convergent", "divergent"):
+            return web.json_response(
+                {"error": "type must be 'convergent' or 'divergent'"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        if not self.on_more_stream_request:
+            return web.json_response(
+                {"error": "Streaming more requests not supported"},
+                status=501,
+                headers=self._cors_headers(),
+            )
+
+        # Set up SSE response
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                **self._cors_headers(),
+            },
+        )
+        await response.prepare(request)
+
+        try:
+            # Get the async generator from the callback
+            async for event in self.on_more_stream_request(
+                session_id, rec_type, count, session_feedback, profile_diffs, custom_directives
+            ):
+                # Send SSE event
+                sse_data = event.to_sse()
+                await response.write(sse_data.encode("utf-8"))
+                # Flush to ensure immediate delivery
+                await response.drain()
+
+        except Exception as e:
+            # Send error event
+            error_event = f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+            await response.write(error_event.encode("utf-8"))
+
+        await response.write_eof()
+        return response
 
     # ============================================================
     # Profile API: Taste

@@ -799,6 +799,51 @@ Customize styling with: serendipity settings style --edit
             return Object.keys(diffs).length > 0 ? diffs : null;
         }
 
+        function handleSSEEvent(eventType, data, recType, grid, loadingText, loadingDetails, statusMessages) {
+            const loading = document.getElementById('loading-hint');
+
+            switch (eventType) {
+                case 'status':
+                    // Update loading details with status message
+                    statusMessages.push(data.message);
+                    loadingDetails.textContent = data.message;
+                    break;
+
+                case 'tool_use':
+                    // Show tool use message (WebSearch, etc.)
+                    loadingDetails.textContent = data.message;
+                    break;
+
+                case 'complete':
+                    // Handle completed recommendations
+                    if (data.success && data.recommendations && data.recommendations.length > 0) {
+                        // Reverse so newest appears first when prepending
+                        const recs = [...data.recommendations].reverse();
+                        recs.forEach((rec, idx) => {
+                            const card = createCard(rec, recType, idx, true);
+                            grid.prepend(card);
+                            statsShown++;
+                        });
+                        updateStats();
+                        loadingDetails.textContent = `Found ${data.recommendations.length} recommendations!`;
+                    } else {
+                        loadingDetails.textContent = 'No new recommendations found';
+                    }
+                    // Hide loading after a brief moment
+                    setTimeout(() => {
+                        loading.classList.remove('visible');
+                    }, 500);
+                    break;
+
+                case 'error':
+                    loadingDetails.textContent = `Error: ${data.error}`;
+                    setTimeout(() => {
+                        loading.classList.remove('visible');
+                    }, 2000);
+                    break;
+            }
+        }
+
         async function requestMore(type) {
             const loading = document.getElementById('loading-hint');
             const loadingText = document.getElementById('loading-text');
@@ -813,11 +858,8 @@ Customize styling with: serendipity settings style --edit
             // Build informative loading message
             const directives = directivesInput.value.trim();
             const feedbackCount = sessionFeedback.length;
-            let details = [];
-            if (feedbackCount > 0) details.push(`${feedbackCount} feedback items`);
-            if (directives) details.push(`"${directives.substring(0, 40)}${directives.length > 40 ? '...' : ''}"`);
             loadingText.textContent = `Getting ${type} recommendations...`;
-            loadingDetails.textContent = details.length ? details.join(' • ') : 'Searching for discoveries...';
+            loadingDetails.textContent = 'Connecting...';
 
             // Remove "new-batch" class from previous batch
             document.querySelectorAll('.discovery-card.new-batch').forEach(card => {
@@ -842,39 +884,71 @@ Customize styling with: serendipity settings style --edit
             }
 
             // Add custom directives if provided
-            const directives = directivesInput.value.trim();
             if (directives) {
                 payload.custom_directives = directives;
             }
 
             try {
-                const response = await fetch(`${API_BASE}/more`, {
+                // Use SSE streaming endpoint
+                const response = await fetch(`${API_BASE}/more/stream`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(payload)
                 });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.recommendations && data.recommendations.length > 0) {
-                        // Reverse so newest appears first when prepending
-                        const recs = [...data.recommendations].reverse();
-                        recs.forEach((rec, idx) => {
-                            const card = createCard(rec, type, idx, true);
-                            grid.prepend(card);  // New cards appear on top
-                            statsShown++;
-                        });
-                        updateStats();
-                    }
-                    // Clear directives after successful request
-                    directivesInput.value = '';
-                } else {
+                if (!response.ok) {
                     const error = await response.json();
-                    alert('Could not get more: ' + (error.error || 'Unknown error'));
+                    throw new Error(error.error || 'Unknown error');
                 }
+
+                // Parse SSE stream
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let statusMessages = [];
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // Parse SSE events from buffer
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // Keep incomplete line in buffer
+
+                    let currentEvent = null;
+                    let currentData = null;
+
+                    for (const line of lines) {
+                        if (line.startsWith('event: ')) {
+                            currentEvent = line.slice(7);
+                        } else if (line.startsWith('data: ')) {
+                            currentData = line.slice(6);
+
+                            if (currentEvent && currentData) {
+                                try {
+                                    const eventData = JSON.parse(currentData);
+                                    handleSSEEvent(currentEvent, eventData, type, grid, loadingText, loadingDetails, statusMessages);
+                                } catch (parseError) {
+                                    console.error('SSE parse error:', parseError);
+                                }
+                                currentEvent = null;
+                                currentData = null;
+                            }
+                        }
+                    }
+                }
+
+                // Clear directives after successful request
+                directivesInput.value = '';
+
             } catch (e) {
                 console.error('Request more error:', e);
-                alert('Could not get more recommendations.');
+                loadingDetails.textContent = `Error: ${e.message}`;
+                setTimeout(() => {
+                    loading.classList.remove('visible');
+                }, 2000);
             } finally {
                 btn.disabled = false;
                 loading.classList.remove('visible');
