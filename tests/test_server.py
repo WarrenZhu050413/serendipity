@@ -1,7 +1,9 @@
 """Tests for serendipity server module."""
 
+import asyncio
 import json
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -70,11 +72,13 @@ class TestFeedbackServerMoreEndpoint:
         """Test that on_more_request callback receives session_feedback."""
         received_args = {}
 
-        async def on_more_request(session_id, rec_type, count, session_feedback):
+        async def on_more_request(session_id, rec_type, count, session_feedback, profile_diffs, custom_directives):
             received_args["session_id"] = session_id
             received_args["rec_type"] = rec_type
             received_args["count"] = count
             received_args["session_feedback"] = session_feedback
+            received_args["profile_diffs"] = profile_diffs
+            received_args["custom_directives"] = custom_directives
             return []
 
         server = FeedbackServer(storage=storage, on_more_request=on_more_request)
@@ -104,8 +108,10 @@ class TestFeedbackServerMoreEndpoint:
         """Test that callback receives empty list when no session_feedback."""
         received_args = {}
 
-        async def on_more_request(session_id, rec_type, count, session_feedback):
+        async def on_more_request(session_id, rec_type, count, session_feedback, profile_diffs, custom_directives):
             received_args["session_feedback"] = session_feedback
+            received_args["profile_diffs"] = profile_diffs
+            received_args["custom_directives"] = custom_directives
             return []
 
         server = FeedbackServer(storage=storage, on_more_request=on_more_request)
@@ -120,6 +126,34 @@ class TestFeedbackServerMoreEndpoint:
         await server._handle_more(request)
 
         assert received_args["session_feedback"] == []
+        assert received_args["profile_diffs"] is None
+        assert received_args["custom_directives"] == ""
+
+    @pytest.mark.asyncio
+    async def test_more_callback_receives_profile_diffs_and_directives(self, storage):
+        """Test that on_more_request callback receives profile_diffs and custom_directives."""
+        received_args = {}
+
+        async def on_more_request(session_id, rec_type, count, session_feedback, profile_diffs, custom_directives):
+            received_args["profile_diffs"] = profile_diffs
+            received_args["custom_directives"] = custom_directives
+            return []
+
+        server = FeedbackServer(storage=storage, on_more_request=on_more_request)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "session_id": "test-session",
+            "type": "convergent",
+            "count": 5,
+            "profile_diffs": {"taste": "+ Added line\n- Removed line"},
+            "custom_directives": "Focus on technical articles",
+        })
+
+        await server._handle_more(request)
+
+        assert received_args["profile_diffs"] == {"taste": "+ Added line\n- Removed line"}
+        assert received_args["custom_directives"] == "Focus on technical articles"
 
 
 class TestFeedbackServerContextEndpoint:
@@ -248,3 +282,461 @@ class TestFeedbackServerCors:
         assert headers["Access-Control-Allow-Origin"] == "*"
         assert "POST" in headers["Access-Control-Allow-Methods"]
         assert "OPTIONS" in headers["Access-Control-Allow-Methods"]
+
+    @pytest.mark.asyncio
+    async def test_handle_cors_returns_empty_response_with_headers(self):
+        """Test that CORS preflight returns empty response with headers."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_cors(request)
+
+        assert response.status == 200
+        assert response.headers["Access-Control-Allow-Origin"] == "*"
+
+
+class TestFeedbackServerHealthEndpoint:
+    """Tests for /health endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_health_returns_status(self):
+        """Test that /health returns healthy status."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_health(request)
+
+        data = json.loads(response.text)
+        assert data["status"] == "healthy"
+        assert data["service"] == "serendipity-feedback"
+
+
+class TestFeedbackServerIndexEndpoint:
+    """Tests for / index endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_index_with_html_content(self):
+        """Test that / serves HTML content when provided."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage, html_content="<html>Test</html>")
+
+        request = MagicMock()
+        response = await server._handle_index(request)
+
+        assert response.content_type == "text/html"
+        assert "Test" in response.text
+
+    @pytest.mark.asyncio
+    async def test_index_without_html_content(self):
+        """Test that / serves default page when no content."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_index(request)
+
+        assert response.content_type == "text/html"
+        assert "Serendipity" in response.text
+        assert "No content available" in response.text
+
+
+class TestFeedbackServerStaticFiles:
+    """Tests for static file serving."""
+
+    @pytest.mark.asyncio
+    async def test_static_file_returns_content(self, tmp_path):
+        """Test serving a static file."""
+        test_file = tmp_path / "test.html"
+        test_file.write_text("<html>Static Content</html>")
+
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage, static_dir=tmp_path)
+
+        request = MagicMock()
+        request.match_info = {"filename": "test.html"}
+
+        response = await server._handle_static_file(request)
+
+        assert response.status == 200
+        assert "Static Content" in response.text
+
+    @pytest.mark.asyncio
+    async def test_static_file_not_found(self, tmp_path):
+        """Test 404 for missing file."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage, static_dir=tmp_path)
+
+        request = MagicMock()
+        request.match_info = {"filename": "nonexistent.html"}
+
+        response = await server._handle_static_file(request)
+
+        assert response.status == 404
+
+    @pytest.mark.asyncio
+    async def test_static_file_path_traversal_blocked(self, tmp_path):
+        """Test that path traversal is blocked."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage, static_dir=tmp_path)
+
+        request = MagicMock()
+        request.match_info = {"filename": "../../../etc/passwd"}
+
+        response = await server._handle_static_file(request)
+
+        assert response.status == 403
+
+    @pytest.mark.asyncio
+    async def test_static_file_no_static_dir(self):
+        """Test 404 when no static_dir configured."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"filename": "test.html"}
+
+        response = await server._handle_static_file(request)
+
+        assert response.status == 404
+
+
+class TestFeedbackEndpoint:
+    """Tests for /feedback endpoint."""
+
+    @pytest.fixture
+    def storage(self):
+        """Create mock storage."""
+        storage = MagicMock(spec=StorageManager)
+        storage.update_feedback.return_value = True
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_feedback_success(self, storage):
+        """Test successful feedback submission."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "url": "https://example.com",
+            "session_id": "test-session",
+            "feedback": "liked",
+        })
+
+        response = await server._handle_feedback(request)
+        data = json.loads(response.text)
+
+        assert data["success"] is True
+        assert data["feedback"] == "liked"
+        storage.update_feedback.assert_called_once_with(
+            "https://example.com", "test-session", "liked"
+        )
+
+    @pytest.mark.asyncio
+    async def test_feedback_invalid_json(self, storage):
+        """Test feedback with invalid JSON."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(side_effect=json.JSONDecodeError("test", "doc", 0))
+
+        response = await server._handle_feedback(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "Invalid JSON" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_feedback_missing_fields(self, storage):
+        """Test feedback with missing required fields."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "url": "https://example.com",
+            # Missing session_id and feedback
+        })
+
+        response = await server._handle_feedback(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "Missing required fields" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_feedback_invalid_feedback_value(self, storage):
+        """Test feedback with invalid feedback value."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "url": "https://example.com",
+            "session_id": "test-session",
+            "feedback": "invalid",
+        })
+
+        response = await server._handle_feedback(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "liked" in data["error"] or "disliked" in data["error"]
+
+
+class TestServerLifecycle:
+    """Tests for server start/stop lifecycle."""
+
+    @pytest.fixture
+    def storage(self):
+        """Create mock storage."""
+        storage = MagicMock(spec=StorageManager)
+        storage.load_learnings.return_value = ""
+        storage.load_recent_history.return_value = []
+        storage.base_dir = Path("/tmp/test")
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_start_and_stop(self, storage):
+        """Test basic server start and stop."""
+        server = FeedbackServer(storage=storage, idle_timeout=600)
+
+        # Start server on a high port unlikely to be in use
+        port = await server.start(port=59000)
+
+        assert port >= 59000
+        assert server._running is True
+
+        # Stop server
+        await server.stop()
+
+        assert server._running is False
+
+    @pytest.mark.asyncio
+    async def test_start_finds_available_port(self, storage):
+        """Test that server finds available port when preferred is taken."""
+        import socket
+
+        # Bind a port to make it unavailable
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("localhost", 59100))
+            sock.listen(1)
+
+            server = FeedbackServer(storage=storage)
+            port = await server.start(port=59100)
+
+            # Should have found a different port
+            assert port > 59100
+            assert server._running is True
+
+            await server.stop()
+        finally:
+            sock.close()
+
+    @pytest.mark.asyncio
+    async def test_start_exhausts_retries(self, storage):
+        """Test that server raises when all ports exhausted."""
+        import socket
+
+        # Use random high ports to avoid conflicts
+        import random
+        base_port = 50000 + random.randint(0, 5000)
+
+        # Bind multiple ports
+        sockets = []
+        try:
+            for i in range(3):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("localhost", base_port + i))
+                sock.listen(1)
+                sockets.append(sock)
+
+            server = FeedbackServer(storage=storage)
+
+            with pytest.raises(OSError, match="Could not find available port"):
+                await server.start(port=base_port, max_retries=3)
+        finally:
+            for sock in sockets:
+                sock.close()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_shutdown_task(self, storage):
+        """Test that stop properly cancels shutdown task."""
+        server = FeedbackServer(storage=storage, idle_timeout=600)
+
+        port = await server.start(port=59300)
+        assert server._shutdown_task is not None
+
+        await server.stop()
+
+        assert server._running is False
+
+    @pytest.mark.asyncio
+    async def test_idle_timeout_triggers_shutdown(self, storage):
+        """Test that idle timeout triggers shutdown."""
+        server = FeedbackServer(storage=storage, idle_timeout=0)  # Immediate timeout
+
+        port = await server.start(port=59400)
+        assert server._running is True
+
+        # Wait a bit for idle check to trigger
+        await asyncio.sleep(0.1)
+
+        # Manually trigger the idle check
+        server._last_activity = datetime.now() - timedelta(seconds=10)
+        elapsed = (datetime.now() - server._last_activity).total_seconds()
+        if elapsed >= server.idle_timeout:
+            await server.stop()
+
+        assert server._running is False
+
+    @pytest.mark.asyncio
+    async def test_health_endpoint_via_http(self, storage):
+        """Test health endpoint via actual HTTP request."""
+        import httpx
+
+        server = FeedbackServer(storage=storage)
+        port = await server.start(port=59500)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"http://localhost:{port}/health")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["status"] == "healthy"
+        finally:
+            await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_static_dir_routes(self, storage, tmp_path):
+        """Test that static_dir enables static file routes."""
+        test_file = tmp_path / "test.html"
+        test_file.write_text("<html>Test</html>")
+
+        server = FeedbackServer(storage=storage, static_dir=tmp_path)
+        port = await server.start(port=59600)
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"http://localhost:{port}/test.html")
+                assert response.status_code == 200
+                assert "Test" in response.text
+        finally:
+            await server.stop()
+
+
+class TestMoreEndpoint:
+    """Tests for /more endpoint."""
+
+    @pytest.fixture
+    def storage(self):
+        """Create mock storage."""
+        return MagicMock(spec=StorageManager)
+
+    @pytest.mark.asyncio
+    async def test_more_invalid_json(self, storage):
+        """Test more with invalid JSON."""
+        server = FeedbackServer(storage=storage, on_more_request=AsyncMock())
+
+        request = MagicMock()
+        request.json = AsyncMock(side_effect=json.JSONDecodeError("test", "doc", 0))
+
+        response = await server._handle_more(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "Invalid JSON" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_more_missing_fields(self, storage):
+        """Test more with missing required fields."""
+        server = FeedbackServer(storage=storage, on_more_request=AsyncMock())
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "session_id": "test",
+            # Missing type
+        })
+
+        response = await server._handle_more(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "Missing required fields" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_more_invalid_type(self, storage):
+        """Test more with invalid type value."""
+        server = FeedbackServer(storage=storage, on_more_request=AsyncMock())
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "session_id": "test",
+            "type": "invalid",
+        })
+
+        response = await server._handle_more(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "convergent" in data["error"] or "divergent" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_more_no_callback(self, storage):
+        """Test more when no callback configured."""
+        server = FeedbackServer(storage=storage)  # No on_more_request
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "session_id": "test",
+            "type": "convergent",
+        })
+
+        response = await server._handle_more(request)
+
+        assert response.status == 501
+        data = json.loads(response.text)
+        assert "not supported" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_more_callback_error(self, storage):
+        """Test more when callback raises error."""
+        async def failing_callback(*args):
+            raise ValueError("Something went wrong")
+
+        server = FeedbackServer(storage=storage, on_more_request=failing_callback)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "session_id": "test",
+            "type": "convergent",
+        })
+
+        response = await server._handle_more(request)
+
+        assert response.status == 500
+        data = json.loads(response.text)
+        assert "Something went wrong" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_more_success(self, storage):
+        """Test successful more request."""
+        async def mock_callback(session_id, rec_type, count, session_feedback, profile_diffs, custom_directives):
+            return [{"url": "https://new.com", "reason": "New recommendation"}]
+
+        server = FeedbackServer(storage=storage, on_more_request=mock_callback)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "session_id": "test",
+            "type": "convergent",
+            "count": 3,
+        })
+
+        response = await server._handle_more(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert len(data["recommendations"]) == 1

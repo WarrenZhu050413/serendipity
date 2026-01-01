@@ -122,6 +122,34 @@ class ApproachType:
 
 
 @dataclass
+class PairingType:
+    """A pairing type for contextual bonus content.
+
+    Pairings are complementary suggestions (music, food, exercises, tips)
+    that enhance the mood of discoveries.
+    """
+    name: str
+    display_name: str
+    enabled: bool = True
+    search_based: bool = False  # True = use WebSearch, False = generate from knowledge
+    icon: str = ""  # Emoji icon for display
+    prompt_hint: str = ""
+    max_count: Optional[int] = None  # Max instances of this pairing type (None=unlimited)
+
+    @classmethod
+    def from_dict(cls, name: str, data: dict) -> "PairingType":
+        return cls(
+            name=name,
+            display_name=data.get("display_name", name.title()),
+            enabled=data.get("enabled", True),
+            search_based=data.get("search_based", False),
+            icon=data.get("icon", ""),
+            prompt_hint=data.get("prompt_hint", ""),
+            max_count=data.get("max_count"),
+        )
+
+
+@dataclass
 class MediaType:
     """A media type for recommendations."""
     name: str
@@ -290,6 +318,7 @@ class TypesConfig:
     - media: What format (article, youtube, book, podcast)
     - context_sources: Where to get user profile/preferences
     - output: Format and destination for recommendations
+    - pairings: Contextual bonus content (music, food, exercises, tips)
 
     Simple by default: just enable/disable what you want.
     The agent reads your taste.md and decides the distribution.
@@ -303,6 +332,8 @@ class TypesConfig:
     media: dict[str, MediaType] = field(default_factory=dict)
     context_sources: dict[str, ContextSourceConfig] = field(default_factory=dict)
     output: OutputConfig = field(default_factory=OutputConfig.default)
+    pairings: dict[str, PairingType] = field(default_factory=dict)
+    pairings_enabled: bool = True  # Master toggle for pairings system
 
     @classmethod
     def from_dict(cls, data: dict) -> "TypesConfig":
@@ -323,6 +354,11 @@ class TypesConfig:
         output_data = data.get("output", {})
         output = OutputConfig.from_dict(output_data) if output_data else OutputConfig.default()
 
+        # Parse pairings config
+        pairings = {}
+        for name, p_data in data.get("pairings", {}).items():
+            pairings[name] = PairingType.from_dict(name, p_data)
+
         return cls(
             version=data.get("version", 2),
             model=data.get("model", "opus"),
@@ -333,6 +369,8 @@ class TypesConfig:
             media=media,
             context_sources=context_sources,
             output=output,
+            pairings=pairings,
+            pairings_enabled=data.get("pairings_enabled", True),
         )
 
     @classmethod
@@ -395,3 +433,12 @@ class TypesConfig:
     def get_enabled_media(self) -> list[MediaType]:
         """Get list of enabled media types."""
         return [m for m in self.media.values() if m.enabled]
+
+    def get_enabled_pairings(self) -> list[PairingType]:
+        """Get list of enabled pairing types.
+
+        Returns empty list if pairings_enabled is False (master toggle).
+        """
+        if not self.pairings_enabled:
+            return []
+        return [p for p in self.pairings.values() if p.enabled]

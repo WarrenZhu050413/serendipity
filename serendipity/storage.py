@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import yaml
+from copy import deepcopy
 
 if TYPE_CHECKING:
     from serendipity.config.types import TypesConfig
@@ -82,6 +83,24 @@ class HistoryEntry:
             thumbnail_url=data.get("thumbnail_url"),
             metadata=data.get("metadata", {}),
         )
+
+
+@dataclass
+class VersionInfo:
+    """Information about a version backup."""
+
+    version_id: str  # Timestamp-based ID (e.g., "20251231_143022")
+    timestamp: str  # ISO format timestamp
+    preview: str  # First ~100 chars of content
+    file_path: Path  # Path to the backup file
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "version_id": self.version_id,
+            "timestamp": self.timestamp,
+            "preview": self.preview,
+        }
 
 
 class ProfileManager:
@@ -805,3 +824,235 @@ class StorageManager:
             )
 
         return result
+
+    # ============================================================
+    # New API methods for web UI integration
+    # ============================================================
+
+    def save_taste(self, content: str) -> None:
+        """Save taste profile content.
+
+        Args:
+            content: Markdown content for taste.md
+        """
+        self.ensure_dirs()
+        self.taste_path.write_text(content)
+
+    def delete_history_entry(self, url: str) -> bool:
+        """Delete a history entry by URL.
+
+        Args:
+            url: URL of the entry to delete
+
+        Returns:
+            True if entry was found and deleted, False otherwise.
+        """
+        if not self.history_path.exists():
+            return False
+
+        entries = self.load_all_history()
+        original_count = len(entries)
+
+        # Filter out entries with matching URL
+        entries = [e for e in entries if e.url != url]
+
+        if len(entries) == original_count:
+            return False
+
+        # Rewrite the file
+        self.history_path.unlink()
+        if entries:
+            self.append_history(entries)
+
+        return True
+
+    def update_settings_yaml(self, updates: dict) -> None:
+        """Deep merge partial updates into settings.yaml.
+
+        Args:
+            updates: Dictionary of updates to merge. Supports nested paths.
+                     Example: {"model": "sonnet", "approaches": {"convergent": {"enabled": False}}}
+        """
+        # Load current settings
+        if self.settings_path.exists():
+            current = yaml.safe_load(self.settings_path.read_text()) or {}
+        else:
+            current = {}
+
+        # Deep merge updates
+        merged = self._deep_merge(current, updates)
+
+        # Write back
+        self.ensure_dirs()
+        self.settings_path.write_text(yaml.dump(merged, default_flow_style=False, sort_keys=False))
+
+    def _deep_merge(self, base: dict, updates: dict) -> dict:
+        """Deep merge two dictionaries.
+
+        Args:
+            base: Base dictionary
+            updates: Updates to merge in
+
+        Returns:
+            Merged dictionary
+        """
+        result = deepcopy(base)
+        for key, value in updates.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = self._deep_merge(result[key], value)
+            else:
+                result[key] = deepcopy(value)
+        return result
+
+    # ============================================================
+    # Version history support
+    # ============================================================
+
+    @property
+    def versions_dir(self) -> Path:
+        """Directory for version backups."""
+        return self.base_dir / ".versions"
+
+    def _get_version_dir(self, file_path: Path) -> Path:
+        """Get the version directory for a specific file.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            Path to the version directory for this file
+        """
+        # Use the filename as the subdirectory name
+        return self.versions_dir / file_path.name
+
+    def save_with_version(self, file_path: Path, content: str) -> str:
+        """Save content and create a version backup.
+
+        Args:
+            file_path: Path to the file to save
+            content: New content to write
+
+        Returns:
+            Version ID of the backup created
+        """
+        # Create version backup if file exists
+        version_id = ""
+        if file_path.exists():
+            version_id = self._create_version_backup(file_path)
+
+        # Write new content
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content)
+
+        return version_id
+
+    def _create_version_backup(self, file_path: Path) -> str:
+        """Create a version backup of a file.
+
+        Args:
+            file_path: Path to the file to backup
+
+        Returns:
+            Version ID of the backup
+        """
+        version_dir = self._get_version_dir(file_path)
+        version_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate version ID from timestamp
+        now = datetime.now()
+        version_id = now.strftime("%Y%m%d_%H%M%S")
+
+        # Copy file to version directory
+        backup_path = version_dir / f"{version_id}.bak"
+        shutil.copy2(file_path, backup_path)
+
+        return version_id
+
+    def list_versions(self, file_path: Path, limit: int = 50) -> list[VersionInfo]:
+        """List available versions for a file.
+
+        Args:
+            file_path: Path to the file
+            limit: Maximum number of versions to return
+
+        Returns:
+            List of VersionInfo, newest first
+        """
+        version_dir = self._get_version_dir(file_path)
+        if not version_dir.exists():
+            return []
+
+        versions = []
+        for backup_file in sorted(version_dir.glob("*.bak"), reverse=True):
+            if len(versions) >= limit:
+                break
+
+            version_id = backup_file.stem
+            try:
+                # Parse timestamp from version ID
+                dt = datetime.strptime(version_id, "%Y%m%d_%H%M%S")
+                timestamp = dt.isoformat()
+            except ValueError:
+                timestamp = ""
+
+            # Read preview
+            try:
+                content = backup_file.read_text()
+                preview = content[:100].replace("\n", " ").strip()
+                if len(content) > 100:
+                    preview += "..."
+            except Exception:
+                preview = "(unable to read)"
+
+            versions.append(VersionInfo(
+                version_id=version_id,
+                timestamp=timestamp,
+                preview=preview,
+                file_path=backup_file,
+            ))
+
+        return versions
+
+    def get_version_content(self, file_path: Path, version_id: str) -> Optional[str]:
+        """Get the content of a specific version.
+
+        Args:
+            file_path: Path to the original file
+            version_id: Version ID to retrieve
+
+        Returns:
+            Content of the version, or None if not found
+        """
+        version_dir = self._get_version_dir(file_path)
+        backup_path = version_dir / f"{version_id}.bak"
+
+        if not backup_path.exists():
+            return None
+
+        return backup_path.read_text()
+
+    def restore_version(self, file_path: Path, version_id: str) -> Optional[str]:
+        """Restore a file to a previous version.
+
+        Creates a backup of current content before restoring.
+
+        Args:
+            file_path: Path to the file to restore
+            version_id: Version ID to restore to
+
+        Returns:
+            The restored content, or None if version not found
+        """
+        # Get the version content
+        content = self.get_version_content(file_path, version_id)
+        if content is None:
+            return None
+
+        # Backup current content before restoring
+        if file_path.exists():
+            self._create_version_backup(file_path)
+
+        # Restore the version
+        file_path.write_text(content)
+
+        return content

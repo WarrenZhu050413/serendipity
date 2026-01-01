@@ -4,15 +4,25 @@ import asyncio
 import errno
 import json
 import logging
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import yaml
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
-from serendipity.storage import HistoryEntry, StorageManager
+from serendipity.learnings_parser import (
+    Learning,
+    add_learning,
+    delete_learning_by_id,
+    parse_learnings,
+    serialize_learnings,
+    update_learning_by_id,
+)
+from serendipity.storage import HistoryEntry, StorageManager, VersionInfo
 
 
 class FeedbackServer:
@@ -30,7 +40,10 @@ class FeedbackServer:
 
         Args:
             storage: Storage manager for persisting feedback
-            on_more_request: Callback for "more" requests. Called with (session_id, type, count, session_feedback).
+            on_more_request: Callback for "more" requests. Called with
+                (session_id, type, count, session_feedback, profile_diffs, custom_directives).
+                - profile_diffs: Optional dict of {section_name: diff_text} for profile changes
+                - custom_directives: Optional string with user's custom instructions for this batch
             idle_timeout: Seconds of inactivity before auto-shutdown
             html_content: Optional HTML content to serve at / (legacy mode)
             static_dir: Optional directory to serve static files from
@@ -70,6 +83,46 @@ class FeedbackServer:
         self._app.router.add_options("/feedback", self._handle_cors)
         self._app.router.add_options("/more", self._handle_cors)
         self._app.router.add_options("/context", self._handle_cors)
+
+        # API endpoints for profile/settings management
+        # Profile: taste
+        self._app.router.add_get("/api/profile/taste", self._handle_get_taste)
+        self._app.router.add_post("/api/profile/taste", self._handle_save_taste)
+        self._app.router.add_options("/api/profile/taste", self._handle_cors)
+
+        # Profile: learnings
+        self._app.router.add_get("/api/profile/learnings", self._handle_get_learnings)
+        self._app.router.add_post("/api/profile/learnings", self._handle_add_learning)
+        self._app.router.add_options("/api/profile/learnings", self._handle_cors)
+        self._app.router.add_delete("/api/profile/learnings/{id}", self._handle_delete_learning)
+        self._app.router.add_patch("/api/profile/learnings/{id}", self._handle_update_learning)
+        self._app.router.add_options("/api/profile/learnings/{id}", self._handle_cors)
+
+        # Profile: history
+        self._app.router.add_get("/api/profile/history", self._handle_get_history)
+        self._app.router.add_delete("/api/profile/history", self._handle_delete_history_entry)
+        self._app.router.add_options("/api/profile/history", self._handle_cors)
+
+        # Settings
+        self._app.router.add_get("/api/settings", self._handle_get_settings)
+        self._app.router.add_patch("/api/settings", self._handle_update_settings)
+        self._app.router.add_post("/api/settings/reset", self._handle_reset_settings)
+        self._app.router.add_options("/api/settings", self._handle_cors)
+        self._app.router.add_options("/api/settings/reset", self._handle_cors)
+
+        # Sources
+        self._app.router.add_get("/api/sources", self._handle_get_sources)
+        self._app.router.add_post("/api/sources/{name}/toggle", self._handle_toggle_source)
+        self._app.router.add_options("/api/sources", self._handle_cors)
+        self._app.router.add_options("/api/sources/{name}/toggle", self._handle_cors)
+
+        # Version history
+        self._app.router.add_get("/api/versions/{file}", self._handle_list_versions)
+        self._app.router.add_get("/api/versions/{file}/{version_id}", self._handle_get_version)
+        self._app.router.add_post("/api/versions/{file}/{version_id}/restore", self._handle_restore_version)
+        self._app.router.add_options("/api/versions/{file}", self._handle_cors)
+        self._app.router.add_options("/api/versions/{file}/{version_id}", self._handle_cors)
+        self._app.router.add_options("/api/versions/{file}/{version_id}/restore", self._handle_cors)
 
         # Serve static files from static_dir if provided, otherwise use legacy html_content
         if self.static_dir:
@@ -317,7 +370,11 @@ class FeedbackServer:
             "count": 5,
             "session_feedback": [  // Optional: feedback from current session
                 {"url": "...", "feedback": "liked" | "disliked"}
-            ]
+            ],
+            "profile_diffs": {  // Optional: changes made to profile since last request
+                "taste": "diff content here..."
+            },
+            "custom_directives": "string"  // Optional: user-provided directives for this batch
         }
         """
         self._update_activity()
@@ -334,7 +391,9 @@ class FeedbackServer:
         session_id = data.get("session_id")
         rec_type = data.get("type")
         count = data.get("count", 5)
-        session_feedback = data.get("session_feedback", [])  # NEW: live feedback from session
+        session_feedback = data.get("session_feedback", [])
+        profile_diffs = data.get("profile_diffs")  # Dict of {section: diff_text}
+        custom_directives = data.get("custom_directives", "")  # User's custom instructions
 
         if not all([session_id, rec_type]):
             return web.json_response(
@@ -358,8 +417,10 @@ class FeedbackServer:
             )
 
         try:
-            # Call the callback to get more recommendations (now with session_feedback)
-            result = await self.on_more_request(session_id, rec_type, count, session_feedback)
+            # Call the callback to get more recommendations
+            result = await self.on_more_request(
+                session_id, rec_type, count, session_feedback, profile_diffs, custom_directives
+            )
 
             return web.json_response(
                 {"success": True, "recommendations": result},
@@ -371,3 +432,461 @@ class FeedbackServer:
                 status=500,
                 headers=self._cors_headers(),
             )
+
+    # ============================================================
+    # Profile API: Taste
+    # ============================================================
+
+    async def _handle_get_taste(self, request: web.Request) -> web.Response:
+        """Get taste.md content."""
+        self._update_activity()
+        content = self.storage.load_taste()
+        return web.json_response(
+            {"content": content},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_save_taste(self, request: web.Request) -> web.Response:
+        """Save taste.md content with versioning."""
+        self._update_activity()
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response(
+                {"error": "Invalid JSON"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        content = data.get("content", "")
+
+        # Save with version backup
+        version_id = self.storage.save_with_version(self.storage.taste_path, content)
+
+        return web.json_response(
+            {"success": True, "version_id": version_id},
+            headers=self._cors_headers(),
+        )
+
+    # ============================================================
+    # Profile API: Learnings
+    # ============================================================
+
+    async def _handle_get_learnings(self, request: web.Request) -> web.Response:
+        """Get learnings as structured list."""
+        self._update_activity()
+        markdown = self.storage.load_learnings()
+        learnings = parse_learnings(markdown)
+        return web.json_response(
+            {"learnings": [l.to_dict() for l in learnings]},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_add_learning(self, request: web.Request) -> web.Response:
+        """Add a new learning."""
+        self._update_activity()
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response(
+                {"error": "Invalid JSON"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        learning_type = data.get("type", "like")
+        title = data.get("title", "")
+        content = data.get("content", "")
+
+        if not title:
+            return web.json_response(
+                {"error": "title is required"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        # Parse, add, and serialize back
+        markdown = self.storage.load_learnings()
+        learnings = parse_learnings(markdown)
+        learnings = add_learning(learnings, learning_type, title, content)
+
+        # Save with version
+        new_markdown = serialize_learnings(learnings)
+        version_id = self.storage.save_with_version(self.storage.learnings_path, new_markdown)
+
+        return web.json_response(
+            {"success": True, "learnings": [l.to_dict() for l in learnings], "version_id": version_id},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_delete_learning(self, request: web.Request) -> web.Response:
+        """Delete a learning by ID."""
+        self._update_activity()
+
+        learning_id = request.match_info.get("id", "")
+        if not learning_id:
+            return web.json_response(
+                {"error": "Learning ID is required"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        markdown = self.storage.load_learnings()
+        learnings = parse_learnings(markdown)
+        original_count = len(learnings)
+
+        learnings = delete_learning_by_id(learnings, learning_id)
+
+        if len(learnings) == original_count:
+            return web.json_response(
+                {"error": "Learning not found"},
+                status=404,
+                headers=self._cors_headers(),
+            )
+
+        # Save with version
+        new_markdown = serialize_learnings(learnings)
+        version_id = self.storage.save_with_version(self.storage.learnings_path, new_markdown)
+
+        return web.json_response(
+            {"success": True, "version_id": version_id},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_update_learning(self, request: web.Request) -> web.Response:
+        """Update a learning by ID."""
+        self._update_activity()
+
+        learning_id = request.match_info.get("id", "")
+        if not learning_id:
+            return web.json_response(
+                {"error": "Learning ID is required"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response(
+                {"error": "Invalid JSON"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        title = data.get("title")
+        content = data.get("content")
+
+        markdown = self.storage.load_learnings()
+        learnings = parse_learnings(markdown)
+
+        # Check if learning exists
+        found = any(l.id == learning_id for l in learnings)
+        if not found:
+            return web.json_response(
+                {"error": "Learning not found"},
+                status=404,
+                headers=self._cors_headers(),
+            )
+
+        learnings = update_learning_by_id(learnings, learning_id, title=title, content=content)
+
+        # Save with version
+        new_markdown = serialize_learnings(learnings)
+        version_id = self.storage.save_with_version(self.storage.learnings_path, new_markdown)
+
+        return web.json_response(
+            {"success": True, "learnings": [l.to_dict() for l in learnings], "version_id": version_id},
+            headers=self._cors_headers(),
+        )
+
+    # ============================================================
+    # Profile API: History
+    # ============================================================
+
+    async def _handle_get_history(self, request: web.Request) -> web.Response:
+        """Get history entries."""
+        self._update_activity()
+
+        limit = int(request.query.get("limit", "50"))
+        entries = self.storage.load_recent_history(limit)
+
+        return web.json_response(
+            {
+                "history": [
+                    {
+                        "url": e.url,
+                        "title": e.title,
+                        "reason": e.reason,
+                        "type": e.type,
+                        "media_type": e.media_type,
+                        "feedback": e.feedback,
+                        "timestamp": e.timestamp,
+                        "session_id": e.session_id,
+                    }
+                    for e in entries
+                ]
+            },
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_delete_history_entry(self, request: web.Request) -> web.Response:
+        """Delete a history entry by URL."""
+        self._update_activity()
+
+        # URL is passed as query parameter (URL-encoded)
+        url = request.query.get("url", "")
+        if not url:
+            return web.json_response(
+                {"error": "url query parameter is required"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        # URL-decode the url parameter
+        url = urllib.parse.unquote(url)
+
+        deleted = self.storage.delete_history_entry(url)
+
+        if not deleted:
+            return web.json_response(
+                {"error": "History entry not found"},
+                status=404,
+                headers=self._cors_headers(),
+            )
+
+        return web.json_response(
+            {"success": True},
+            headers=self._cors_headers(),
+        )
+
+    # ============================================================
+    # Settings API
+    # ============================================================
+
+    async def _handle_get_settings(self, request: web.Request) -> web.Response:
+        """Get current settings."""
+        self._update_activity()
+
+        if self.storage.settings_path.exists():
+            settings = yaml.safe_load(self.storage.settings_path.read_text()) or {}
+        else:
+            settings = {}
+
+        return web.json_response(
+            {"settings": settings},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_update_settings(self, request: web.Request) -> web.Response:
+        """Update settings (partial merge)."""
+        self._update_activity()
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response(
+                {"error": "Invalid JSON"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        updates = data.get("settings", data)
+
+        # Save with version backup first
+        if self.storage.settings_path.exists():
+            self.storage._create_version_backup(self.storage.settings_path)
+
+        self.storage.update_settings_yaml(updates)
+
+        # Return updated settings
+        settings = yaml.safe_load(self.storage.settings_path.read_text()) or {}
+
+        return web.json_response(
+            {"success": True, "settings": settings},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_reset_settings(self, request: web.Request) -> web.Response:
+        """Reset settings to defaults."""
+        self._update_activity()
+
+        # Backup current settings
+        if self.storage.settings_path.exists():
+            self.storage._create_version_backup(self.storage.settings_path)
+            self.storage.settings_path.unlink()
+
+        # The next load_config() call will copy defaults
+
+        return web.json_response(
+            {"success": True},
+            headers=self._cors_headers(),
+        )
+
+    # ============================================================
+    # Sources API
+    # ============================================================
+
+    async def _handle_get_sources(self, request: web.Request) -> web.Response:
+        """Get list of context sources with status."""
+        self._update_activity()
+
+        if self.storage.settings_path.exists():
+            settings = yaml.safe_load(self.storage.settings_path.read_text()) or {}
+        else:
+            settings = {}
+
+        context_sources = settings.get("context_sources", {})
+
+        sources = []
+        for name, config in context_sources.items():
+            sources.append({
+                "name": name,
+                "type": config.get("type", "unknown"),
+                "enabled": config.get("enabled", False),
+                "description": config.get("description", ""),
+            })
+
+        return web.json_response(
+            {"sources": sources},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_toggle_source(self, request: web.Request) -> web.Response:
+        """Toggle a source enabled/disabled."""
+        self._update_activity()
+
+        name = request.match_info.get("name", "")
+        if not name:
+            return web.json_response(
+                {"error": "Source name is required"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        if self.storage.settings_path.exists():
+            settings = yaml.safe_load(self.storage.settings_path.read_text()) or {}
+        else:
+            settings = {}
+
+        context_sources = settings.get("context_sources", {})
+        if name not in context_sources:
+            return web.json_response(
+                {"error": f"Source '{name}' not found"},
+                status=404,
+                headers=self._cors_headers(),
+            )
+
+        # Toggle
+        current = context_sources[name].get("enabled", False)
+        new_enabled = not current
+
+        # Update settings
+        self.storage.update_settings_yaml({
+            "context_sources": {
+                name: {"enabled": new_enabled}
+            }
+        })
+
+        return web.json_response(
+            {"success": True, "name": name, "enabled": new_enabled},
+            headers=self._cors_headers(),
+        )
+
+    # ============================================================
+    # Version History API
+    # ============================================================
+
+    def _resolve_file_path(self, file_name: str) -> Optional[Path]:
+        """Resolve a file name to a path.
+
+        Supported file names:
+        - taste: taste.md
+        - learnings: learnings.md
+        - settings: settings.yaml
+        """
+        mapping = {
+            "taste": self.storage.taste_path,
+            "learnings": self.storage.learnings_path,
+            "settings": self.storage.settings_path,
+        }
+        return mapping.get(file_name)
+
+    async def _handle_list_versions(self, request: web.Request) -> web.Response:
+        """List versions for a file."""
+        self._update_activity()
+
+        file_name = request.match_info.get("file", "")
+        file_path = self._resolve_file_path(file_name)
+
+        if not file_path:
+            return web.json_response(
+                {"error": f"Unknown file: {file_name}. Supported: taste, learnings, settings"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        versions = self.storage.list_versions(file_path)
+
+        return web.json_response(
+            {"versions": [v.to_dict() for v in versions]},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_get_version(self, request: web.Request) -> web.Response:
+        """Get content of a specific version."""
+        self._update_activity()
+
+        file_name = request.match_info.get("file", "")
+        version_id = request.match_info.get("version_id", "")
+
+        file_path = self._resolve_file_path(file_name)
+        if not file_path:
+            return web.json_response(
+                {"error": f"Unknown file: {file_name}"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        content = self.storage.get_version_content(file_path, version_id)
+        if content is None:
+            return web.json_response(
+                {"error": f"Version not found: {version_id}"},
+                status=404,
+                headers=self._cors_headers(),
+            )
+
+        return web.json_response(
+            {"content": content, "version_id": version_id},
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_restore_version(self, request: web.Request) -> web.Response:
+        """Restore a file to a previous version."""
+        self._update_activity()
+
+        file_name = request.match_info.get("file", "")
+        version_id = request.match_info.get("version_id", "")
+
+        file_path = self._resolve_file_path(file_name)
+        if not file_path:
+            return web.json_response(
+                {"error": f"Unknown file: {file_name}"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        content = self.storage.restore_version(file_path, version_id)
+        if content is None:
+            return web.json_response(
+                {"error": f"Version not found: {version_id}"},
+                status=404,
+                headers=self._cors_headers(),
+            )
+
+        return web.json_response(
+            {"success": True, "content": content},
+            headers=self._cors_headers(),
+        )

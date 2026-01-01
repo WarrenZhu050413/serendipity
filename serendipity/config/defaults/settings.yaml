@@ -221,3 +221,68 @@ context_sources:
       IMPORTANT: Search Whorl FIRST using mcp__whorl__text_search_text_search_post
       to understand their preferences, interests, and past writings before making
       recommendations. This makes your recommendations much more personalized.
+
+# PAIRINGS - Contextual bonus content
+# Complementary suggestions (music, food, exercises, tips) that enhance the mood
+pairings_enabled: true
+
+pairings:
+  music:
+    display_name: "Listen"
+    enabled: true
+    search_based: true
+    icon: "🎵"
+    prompt_hint: |
+      Suggest a song or album that complements their current mood, topic, or context.
+      Search for the actual track/album. Include artist name and why it fits.
+
+  food:
+    display_name: "Taste"
+    enabled: true
+    search_based: true
+    icon: "🍽️"
+    prompt_hint: |
+      Suggest a recipe or dish that thematically connects to their interests.
+      Search for actual recipes. Include cuisine style and cooking time if possible.
+
+  exercise:
+    display_name: "Move"
+    enabled: true
+    search_based: false
+    icon: "🏃"
+    prompt_hint: |
+      Suggest a quick exercise, stretch, or movement that relates to their context.
+      Keep it under 5 minutes. Can be thematic (e.g., "writer's block" -> hand stretches).
+
+  tip:
+    display_name: "Try"
+    enabled: true
+    search_based: false
+    icon: "💡"
+    prompt_hint: |
+      One small actionable insight related to their interests or current context.
+      Should be practical and immediately usable. Keep it concise.
+
+  quote:
+    display_name: "Quote"
+    enabled: true
+    search_based: false
+    max_count: 1
+    icon: "📜"
+    prompt_hint: |
+      A resonant quote that connects to their current context or interests.
+      Include author/source. Choose wisely - only ONE quote allowed.
+
+  action:
+    display_name: "Do"
+    enabled: true
+    search_based: false
+    icon: "🎯"
+    prompt_hint: |
+      Suggest a specific activity or action for right now. Examples:
+      - Short exercise or stretch (5-10 min)
+      - Meditation or breathing exercise
+      - Writing prompt or journaling
+      - Rest/nap suggestion
+      - Creative activity (sketch, doodle)
+      Match the energy of their current context.

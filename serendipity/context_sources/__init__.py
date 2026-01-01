@@ -25,6 +25,7 @@ Usage:
 from typing import TYPE_CHECKING
 
 from .base import ContextResult, ContextSource, MCPConfig
+from .command import CommandSource
 from .loader import LoaderSource
 from .mcp import MCPServerSource
 
@@ -68,6 +69,8 @@ class ContextSourceManager:
             source_type = source_config.get("type", "loader")
             if source_type == "loader":
                 self.sources[name] = LoaderSource(name, source_config)
+            elif source_type == "command":
+                self.sources[name] = CommandSource(name, source_config)
             elif source_type == "mcp":
                 self.sources[name] = MCPServerSource(name, source_config)
             else:
@@ -205,6 +208,7 @@ __all__ = [
     "ContextSource",
     "ContextResult",
     "MCPConfig",
+    "CommandSource",
     "LoaderSource",
     "MCPServerSource",
 ]

@@ -1,17 +1,13 @@
 <!--
-SERENDIPITY BASE TEMPLATE
-=========================
+SERENDIPITY BASE TEMPLATE v2
+============================
 
-Masonry grid layout with filtering by approach and media type.
-
-REQUIRED ELEMENTS (JavaScript depends on these):
-- Element with id="recommendations" to hold all recommendation cards
-- Loading indicator with id="loading"
-- Filter controls with class="filter-controls"
+Left panel with Profile/Settings tabs, dark mode support, API integration.
 
 PLACEHOLDERS (automatically replaced by Python):
 - {css} - CSS from ~/.serendipity/style.css
 - {recommendations_html} - All recommendation cards
+- {pairings_html} - Contextual pairing suggestions
 - {session_id} - The current session ID
 - {server_port} - The feedback server port
 
@@ -27,94 +23,325 @@ Customize styling with: serendipity settings style --edit
 {css}
     </style>
 </head>
-<body class="panel-expanded">
-    <!-- Context Panel -->
-    <div id="context-panel" class="context-panel">
-        <button class="toggle-panel" onclick="togglePanel()">◀</button>
-        <div class="panel-header">Context</div>
-        <div class="panel-content">
-            <div class="panel-section">
-                <div class="panel-section-title">Your Input</div>
-                <pre id="input-content">Loading...</pre>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header-bar">
+            <div class="header-brand">
+                <h1 class="header-title">Serendipity</h1>
+                <span class="header-subtitle">Discovery engine</span>
             </div>
-            <div class="panel-section">
-                <div class="panel-section-title">Learnings</div>
-                <pre id="rules-content">Loading...</pre>
+            <div class="header-actions">
+                <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode">
+                    <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                    <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                </button>
+                <button class="header-btn" id="toggle-panel">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                        <line x1="9" y1="3" x2="9" y2="21"></line>
+                    </svg>
+                    Panel
+                </button>
             </div>
-        </div>
-    </div>
+        </header>
 
-    <!-- Main Content -->
-    <div class="header">
-        <h1>Your Discoveries</h1>
-    </div>
+        <!-- Main Layout -->
+        <div class="main-layout">
+            <!-- LEFT Panel: Profile + Settings Tabs -->
+            <aside class="side-panel" id="side-panel">
+                <nav class="tab-nav">
+                    <button class="tab-btn active" data-tab="profile">Profile</button>
+                    <button class="tab-btn" data-tab="settings">Settings</button>
+                </nav>
 
-    <!-- Controls -->
-    <div class="controls">
-        <div class="filter-input-wrapper">
-            <input type="text" class="filter-input" id="filter-input" placeholder="Filter recommendations...">
-            <span class="filter-count" id="filter-count"></span>
-        </div>
+                <div class="tab-content">
+                    <!-- Profile Tab -->
+                    <div class="tab-pane active" id="tab-profile">
+                        <!-- Taste Source -->
+                        <div class="source-section expanded" data-source="taste">
+                            <div class="source-header" onclick="toggleSource(this)">
+                                <div class="source-info">
+                                    <span class="source-status"></span>
+                                    <span class="source-name">taste</span>
+                                    <span class="source-type">loader</span>
+                                </div>
+                                <span class="source-meta" id="taste-status"></span>
+                            </div>
+                            <div class="source-content">
+                                <textarea class="taste-textarea" id="taste-textarea" placeholder="Describe your interests..."></textarea>
+                                <div class="source-actions">
+                                    <button class="save-btn" id="save-taste-btn">Save Taste</button>
+                                    <span class="save-status" id="taste-save-status"></span>
+                                </div>
+                            </div>
+                        </div>
 
-        <div class="filter-buttons">
-            <button class="filter-btn active" data-filter="all">All</button>
-            <button class="filter-btn" data-approach="convergent">More Like This</button>
-            <button class="filter-btn" data-approach="divergent">Surprises</button>
-            <button class="filter-btn" data-media="article">Articles</button>
-            <button class="filter-btn" data-media="youtube">YouTube</button>
-            <button class="filter-btn" data-media="book">Books</button>
-            <button class="filter-btn" data-media="podcast">Podcasts</button>
-        </div>
+                        <!-- Learnings Source -->
+                        <div class="source-section" data-source="learnings">
+                            <div class="source-header" onclick="toggleSource(this)">
+                                <div class="source-info">
+                                    <span class="source-status"></span>
+                                    <span class="source-name">learnings</span>
+                                    <span class="source-type">loader</span>
+                                </div>
+                                <span class="source-meta" id="learnings-count">0 patterns</span>
+                            </div>
+                            <div class="source-content">
+                                <div class="learning-list" id="learnings-list"></div>
+                            </div>
+                        </div>
 
-        <div class="view-toggle">
-            <button class="view-btn active" data-view="masonry" title="Grid view">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-            </button>
-            <button class="view-btn" data-view="scroll" title="List view">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="3" width="12" height="18" rx="2"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/><line x1="9" y1="15" x2="12" y2="15"/></svg>
-            </button>
-        </div>
+                        <!-- History Source -->
+                        <div class="source-section" data-source="history">
+                            <div class="source-header" onclick="toggleSource(this)">
+                                <div class="source-info">
+                                    <span class="source-status"></span>
+                                    <span class="source-name">history</span>
+                                    <span class="source-type">loader</span>
+                                </div>
+                                <span class="source-meta" id="history-count">0 recent</span>
+                            </div>
+                            <div class="source-content">
+                                <div class="history-list" id="history-list"></div>
+                            </div>
+                        </div>
 
-        <div class="more-actions">
-            <button class="more-btn" onclick="requestMore('convergent')">+ More Like This</button>
-            <button class="more-btn" onclick="requestMore('divergent')">+ More Surprises</button>
-        </div>
-    </div>
+                        <!-- Context Sources (MCP etc) -->
+                        <div class="source-section" data-source="sources">
+                            <div class="source-header" onclick="toggleSource(this)">
+                                <div class="source-info">
+                                    <span class="source-status"></span>
+                                    <span class="source-name">sources</span>
+                                    <span class="source-type">mcp</span>
+                                </div>
+                                <span class="source-meta" id="sources-count"></span>
+                            </div>
+                            <div class="source-content">
+                                <div id="sources-list"></div>
+                            </div>
+                        </div>
+                    </div>
 
-    <!-- Stats -->
-    <div class="stats">
-        <div class="stat">Shown: <span id="stat-shown">0</span></div>
-        <div class="stat stat-liked">👍 <span id="stat-liked">0</span></div>
-        <div class="stat stat-disliked">👎 <span id="stat-disliked">0</span></div>
-    </div>
+                    <!-- Settings Tab -->
+                    <div class="tab-pane" id="tab-settings">
+                        <!-- Generation Settings -->
+                        <div class="settings-section">
+                            <h3 class="section-title">Generation</h3>
 
-    <!-- Masonry Grid -->
-    <div class="masonry-grid" id="recommendations" data-view="masonry">
+                            <div class="setting-row">
+                                <label class="setting-label">Model</label>
+                                <select class="setting-select" id="model-select">
+                                    <option value="opus">Opus</option>
+                                    <option value="sonnet">Sonnet</option>
+                                    <option value="haiku">Haiku</option>
+                                </select>
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    Count
+                                    <span class="hint">per round</span>
+                                </label>
+                                <div class="setting-slider-row">
+                                    <input type="range" class="setting-slider" min="3" max="20" value="10" id="count-slider">
+                                    <span class="slider-value" id="count-value">10</span>
+                                </div>
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="setting-label">
+                                    Thinking Tokens
+                                    <span class="hint">extended thinking</span>
+                                </label>
+                                <input type="text" class="setting-input" placeholder="null (disabled)" id="thinking-input">
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="setting-label">Port</label>
+                                <input type="text" class="setting-input" id="port-input">
+                            </div>
+                        </div>
+
+                        <!-- Approaches -->
+                        <div class="settings-section">
+                            <h3 class="section-title">Approaches</h3>
+                            <div id="approaches-list"></div>
+                        </div>
+
+                        <!-- Media Types -->
+                        <div class="settings-section">
+                            <h3 class="section-title">Media Types</h3>
+                            <div id="media-list"></div>
+                        </div>
+
+                        <!-- Output -->
+                        <div class="settings-section">
+                            <h3 class="section-title">Output</h3>
+
+                            <div class="setting-row">
+                                <label class="setting-label">Format</label>
+                                <select class="setting-select" id="format-select">
+                                    <option value="html">HTML</option>
+                                    <option value="markdown">Markdown</option>
+                                    <option value="json">JSON</option>
+                                </select>
+                            </div>
+
+                            <div class="setting-row">
+                                <label class="setting-label">Destination</label>
+                                <select class="setting-select" id="destination-select">
+                                    <option value="browser">Browser</option>
+                                    <option value="stdout">Terminal</option>
+                                    <option value="file">File</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Save/Reset -->
+                        <div class="settings-section">
+                            <div class="source-actions">
+                                <button class="save-btn" id="save-settings-btn">Save Settings</button>
+                                <button class="reset-btn" id="reset-settings-btn">Reset to Defaults</button>
+                                <span class="save-status" id="settings-save-status"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center Panel: Discovery Grid -->
+            <main class="center-panel">
+                <div class="center-header">
+                    <div class="header-controls">
+                        <button class="round-btn" id="generate-btn" onclick="requestMore('convergent')">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="23 4 23 10 17 10"></polyline>
+                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                            </svg>
+                            Another Round
+                        </button>
+                        <div class="stats-bar">
+                            <div class="stat">Shown: <span id="stat-shown">0</span></div>
+                            <div class="stat liked">👍 <span id="stat-liked">0</span></div>
+                            <div class="stat">👎 <span id="stat-disliked">0</span></div>
+                        </div>
+                    </div>
+                    <div class="directives-row">
+                        <input type="text" class="directives-input" id="directives-input" placeholder="Optional: Add custom directives for the next batch (e.g., 'more philosophy', 'avoid podcasts')">
+                    </div>
+                </div>
+
+                <!-- Discovery Grid -->
+                <div class="discovery-grid" id="recommendations">
 {recommendations_html}
-    </div>
+                </div>
 
-    <div class="loading" id="loading">Loading more recommendations...</div>
+                <!-- Pairings Section -->
+{pairings_html}
+            </main>
+        </div>
+
+        <!-- Loading Hint -->
+        <div class="loading-hint" id="loading-hint">
+            Loading more recommendations...
+        </div>
+    </div>
 
     <script>
+        // =============================================================
+        // CONSTANTS
+        // =============================================================
         const SESSION_ID = "{session_id}";
         const SERVER_PORT = {server_port};
         const API_BASE = window.location.hostname === 'localhost' ? '' : `http://localhost:${SERVER_PORT}`;
 
-        // Track session feedback
+        // =============================================================
+        // STATE
+        // =============================================================
         const sessionFeedback = [];
-
-        // Stats
         let statsShown = 0;
         let statsLiked = 0;
         let statsDisliked = 0;
+        let profileDirty = false;
+        let settingsDirty = false;
 
-        // Initialize
+        // Profile tracking for diffs
+        let originalTaste = '';       // Loaded taste content
+        let lastSentTaste = '';       // What was last sent to /more
+        let currentBatchId = 0;       // To track which cards belong to which batch
+
+        // =============================================================
+        // API CLIENT
+        // =============================================================
+        const API = {
+            async get(endpoint) {
+                const response = await fetch(`${API_BASE}${endpoint}`);
+                if (!response.ok) throw new Error(`GET ${endpoint} failed`);
+                return response.json();
+            },
+            async post(endpoint, data) {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                if (!response.ok) throw new Error(`POST ${endpoint} failed`);
+                return response.json();
+            },
+            async patch(endpoint, data) {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                if (!response.ok) throw new Error(`PATCH ${endpoint} failed`);
+                return response.json();
+            },
+            async delete(endpoint) {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'DELETE'
+                });
+                if (!response.ok) throw new Error(`DELETE ${endpoint} failed`);
+                return response.json();
+            }
+        };
+
+        // =============================================================
+        // INITIALIZATION
+        // =============================================================
         document.addEventListener('DOMContentLoaded', () => {
-            statsShown = document.querySelectorAll('.card').length;
+            // Load saved theme
+            const savedTheme = localStorage.getItem('serendipity-theme');
+            if (savedTheme) {
+                document.documentElement.setAttribute('data-theme', savedTheme);
+            }
+
+            // Initialize stats
+            statsShown = document.querySelectorAll('.discovery-card').length;
             updateStats();
-            loadContext();
-            setupFilters();
-            setupViewToggle();
+
+            // Load data
+            loadProfile();
+            loadSettings();
+
+            // Setup event listeners
+            setupThemeToggle();
+            setupTabs();
+            setupSliders();
+            setupSaveButtons();
         });
 
         function updateStats() {
@@ -124,140 +351,347 @@ Customize styling with: serendipity settings style --edit
         }
 
         // =============================================================
-        // FILTERING
+        // THEME TOGGLE
         // =============================================================
+        function setupThemeToggle() {
+            document.getElementById('theme-toggle').addEventListener('click', () => {
+                const html = document.documentElement;
+                const currentTheme = html.getAttribute('data-theme');
+                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+                html.setAttribute('data-theme', newTheme);
+                localStorage.setItem('serendipity-theme', newTheme);
+            });
+        }
 
-        function setupFilters() {
-            const input = document.getElementById('filter-input');
-            const buttons = document.querySelectorAll('.filter-btn');
+        // =============================================================
+        // TABS
+        // =============================================================
+        function setupTabs() {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const tab = this.dataset.tab;
 
-            // Text filter
-            input.addEventListener('input', applyFilters);
-
-            // Button filters
-            buttons.forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const isAll = btn.dataset.filter === 'all';
-
-                    if (isAll) {
-                        // Clear all filters
-                        buttons.forEach(b => b.classList.remove('active'));
-                        btn.classList.add('active');
-                    } else {
-                        // Toggle this filter
-                        document.querySelector('.filter-btn[data-filter="all"]').classList.remove('active');
-                        btn.classList.toggle('active');
-
-                        // If no filters active, activate "All"
-                        const anyActive = Array.from(buttons).some(b =>
-                            b.classList.contains('active') && b.dataset.filter !== 'all'
-                        );
-                        if (!anyActive) {
-                            document.querySelector('.filter-btn[data-filter="all"]').classList.add('active');
-                        }
+                    // Warn if dirty
+                    if (tab === 'settings' && profileDirty) {
+                        if (!confirm('You have unsaved profile changes. Switch anyway?')) return;
+                    }
+                    if (tab === 'profile' && settingsDirty) {
+                        if (!confirm('You have unsaved settings changes. Switch anyway?')) return;
                     }
 
-                    applyFilters();
+                    // Update buttons
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+
+                    // Update panes
+                    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+                    document.getElementById('tab-' + tab).classList.add('active');
                 });
             });
-        }
 
-        function applyFilters() {
-            const query = document.getElementById('filter-input').value.toLowerCase().trim();
-            const cards = document.querySelectorAll('.card');
-            const countEl = document.getElementById('filter-count');
-
-            // Get active filters
-            const activeApproaches = Array.from(document.querySelectorAll('.filter-btn[data-approach].active'))
-                .map(b => b.dataset.approach);
-            const activeMedia = Array.from(document.querySelectorAll('.filter-btn[data-media].active'))
-                .map(b => b.dataset.media);
-            const isAll = document.querySelector('.filter-btn[data-filter="all"]').classList.contains('active');
-
-            let visible = 0;
-
-            cards.forEach(card => {
-                const text = card.textContent.toLowerCase();
-                const approach = card.dataset.approach;
-                const media = card.dataset.media;
-
-                let show = true;
-
-                // Text filter
-                if (query && text.indexOf(query) === -1) {
-                    show = false;
-                }
-
-                // Button filters (if not "All")
-                if (!isAll && show) {
-                    const approachMatch = activeApproaches.length === 0 || activeApproaches.includes(approach);
-                    const mediaMatch = activeMedia.length === 0 || activeMedia.includes(media);
-                    show = approachMatch && mediaMatch;
-                }
-
-                card.classList.toggle('hidden', !show);
-                if (show) visible++;
-            });
-
-            // Update count
-            if (query || !isAll) {
-                countEl.textContent = `${visible} of ${cards.length}`;
-            } else {
-                countEl.textContent = '';
-            }
-        }
-
-        // =============================================================
-        // VIEW TOGGLE
-        // =============================================================
-
-        function setupViewToggle() {
-            const buttons = document.querySelectorAll('.view-btn');
-            const grid = document.getElementById('recommendations');
-
-            buttons.forEach(btn => {
-                btn.addEventListener('click', () => {
-                    buttons.forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    grid.dataset.view = btn.dataset.view;
-                });
+            // Toggle panel button
+            document.getElementById('toggle-panel').addEventListener('click', () => {
+                document.getElementById('side-panel').classList.toggle('collapsed');
             });
         }
 
         // =============================================================
-        // CONTEXT PANEL
+        // SOURCE SECTIONS
         // =============================================================
-
-        function togglePanel() {
-            const panel = document.getElementById('context-panel');
-            const btn = panel.querySelector('.toggle-panel');
-            panel.classList.toggle('collapsed');
-            document.body.classList.toggle('panel-expanded');
-            btn.textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
+        function toggleSource(header) {
+            const section = header.closest('.source-section');
+            section.classList.toggle('expanded');
         }
 
-        async function loadContext() {
+        // =============================================================
+        // PROFILE TAB
+        // =============================================================
+        async function loadProfile() {
             try {
-                const response = await fetch(`${API_BASE}/context?session_id=${SESSION_ID}`);
-                if (!response.ok) return;
+                // Load taste
+                const tasteData = await API.get('/api/profile/taste');
+                const tasteContent = tasteData.content || '';
+                document.getElementById('taste-textarea').value = tasteContent;
+                document.getElementById('taste-status').textContent = tasteContent ? 'loaded' : 'empty';
 
-                const data = await response.json();
+                // Track for diff calculation
+                originalTaste = tasteContent;
+                lastSentTaste = tasteContent;
 
-                document.getElementById('input-content').textContent =
-                    data.user_input || 'No input recorded';
-                document.getElementById('rules-content').textContent =
-                    data.rules || 'No learnings yet';
+                // Load learnings
+                const learningsData = await API.get('/api/profile/learnings');
+                renderLearnings(learningsData.learnings || []);
+
+                // Load history
+                const historyData = await API.get('/api/profile/history?limit=20');
+                renderHistory(historyData.history || []);
+
+                // Load sources
+                const sourcesData = await API.get('/api/sources');
+                renderSources(sourcesData.sources || []);
+
             } catch (e) {
-                console.error('Failed to load context:', e);
+                console.error('Failed to load profile:', e);
             }
+        }
+
+        function renderLearnings(learnings) {
+            const list = document.getElementById('learnings-list');
+            document.getElementById('learnings-count').textContent = `${learnings.length} patterns`;
+
+            if (learnings.length === 0) {
+                list.innerHTML = '<div class="empty-state">No learnings yet</div>';
+                return;
+            }
+
+            list.innerHTML = learnings.map(l => `
+                <div class="learning-item ${l.type}" data-id="${l.id}">
+                    <div class="learning-text">
+                        <span class="learning-tag">${l.type === 'like' ? 'Like' : 'Avoid'}</span>
+                        <strong>${escapeHtml(l.title)}</strong>
+                        <p>${escapeHtml(l.content)}</p>
+                    </div>
+                    <div class="learning-actions">
+                        <button class="delete" title="Delete" onclick="deleteLearning('${l.id}')">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function deleteLearning(id) {
+            try {
+                await API.delete(`/api/profile/learnings/${id}`);
+                loadProfile(); // Reload
+            } catch (e) {
+                alert('Failed to delete learning');
+            }
+        }
+
+        function renderHistory(history) {
+            const list = document.getElementById('history-list');
+            document.getElementById('history-count').textContent = `${history.length} recent`;
+
+            if (history.length === 0) {
+                list.innerHTML = '<div class="empty-state">No history yet</div>';
+                return;
+            }
+
+            list.innerHTML = history.slice(0, 20).map(h => `
+                <div class="history-item">
+                    <div class="history-item-content">
+                        <span class="history-icon ${h.feedback === 'disliked' ? 'disliked' : ''}">${h.feedback === 'liked' ? '👍' : h.feedback === 'disliked' ? '👎' : '•'}</span>
+                        <span class="history-title">${escapeHtml(h.title || h.url)}</span>
+                    </div>
+                    <button class="history-delete" title="Remove" onclick="deleteHistory('${encodeURIComponent(h.url)}')">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function deleteHistory(encodedUrl) {
+            try {
+                await API.delete(`/api/profile/history?url=${encodedUrl}`);
+                loadProfile(); // Reload
+            } catch (e) {
+                alert('Failed to delete history entry');
+            }
+        }
+
+        function renderSources(sources) {
+            const list = document.getElementById('sources-list');
+            const mcpSources = sources.filter(s => s.type === 'mcp');
+            document.getElementById('sources-count').textContent = `${mcpSources.length} MCP`;
+
+            if (mcpSources.length === 0) {
+                list.innerHTML = '<div class="empty-state">No MCP sources configured</div>';
+                return;
+            }
+
+            list.innerHTML = mcpSources.map(s => `
+                <div class="toggle-row">
+                    <div class="toggle-label">
+                        ${escapeHtml(s.name)}
+                        <span class="desc">${escapeHtml(s.description || '')}</span>
+                    </div>
+                    <div class="mini-toggle ${s.enabled ? 'active' : ''}" data-source="${s.name}" onclick="toggleSourceEnabled('${s.name}', this)"></div>
+                </div>
+            `).join('');
+        }
+
+        async function toggleSourceEnabled(name, toggle) {
+            try {
+                await API.post(`/api/sources/${name}/toggle`);
+                toggle.classList.toggle('active');
+            } catch (e) {
+                alert('Failed to toggle source');
+            }
+        }
+
+        // =============================================================
+        // SETTINGS TAB
+        // =============================================================
+        async function loadSettings() {
+            try {
+                const data = await API.get('/api/settings');
+                const settings = data.settings || {};
+
+                // Generation
+                document.getElementById('model-select').value = settings.model || 'opus';
+                document.getElementById('count-slider').value = settings.total_count || 10;
+                document.getElementById('count-value').textContent = settings.total_count || 10;
+                document.getElementById('thinking-input').value = settings.thinking_tokens || '';
+                document.getElementById('port-input').value = settings.feedback_server_port || 9876;
+
+                // Approaches
+                const approaches = settings.approaches || {};
+                renderApproaches(approaches);
+
+                // Media
+                const media = settings.media || {};
+                renderMedia(media);
+
+                // Output
+                const output = settings.output || {};
+                document.getElementById('format-select').value = output.default_format || 'html';
+                document.getElementById('destination-select').value = output.default_destination || 'browser';
+
+            } catch (e) {
+                console.error('Failed to load settings:', e);
+            }
+        }
+
+        function renderApproaches(approaches) {
+            const list = document.getElementById('approaches-list');
+            list.innerHTML = Object.entries(approaches).map(([key, val]) => `
+                <div class="toggle-row">
+                    <div class="toggle-label">
+                        ${escapeHtml(val.display_name || key)}
+                    </div>
+                    <div class="mini-toggle ${val.enabled ? 'active' : ''}" data-approach="${key}" onclick="this.classList.toggle('active'); markSettingsDirty()"></div>
+                </div>
+            `).join('');
+        }
+
+        function renderMedia(media) {
+            const list = document.getElementById('media-list');
+            list.innerHTML = Object.entries(media).map(([key, val]) => `
+                <div class="toggle-row">
+                    <div class="toggle-label">
+                        ${escapeHtml(val.display_name || key)}
+                    </div>
+                    <div class="mini-toggle ${val.enabled ? 'active' : ''}" data-media="${key}" onclick="this.classList.toggle('active'); markSettingsDirty()"></div>
+                </div>
+            `).join('');
+        }
+
+        // =============================================================
+        // SLIDERS
+        // =============================================================
+        function setupSliders() {
+            const countSlider = document.getElementById('count-slider');
+            const countValue = document.getElementById('count-value');
+            countSlider.addEventListener('input', function() {
+                countValue.textContent = this.value;
+                markSettingsDirty();
+            });
+
+            // Mark dirty on other inputs
+            ['model-select', 'thinking-input', 'port-input', 'format-select', 'destination-select'].forEach(id => {
+                document.getElementById(id).addEventListener('change', markSettingsDirty);
+            });
+
+            // Taste textarea
+            document.getElementById('taste-textarea').addEventListener('input', markProfileDirty);
+        }
+
+        function markProfileDirty() {
+            profileDirty = true;
+            document.getElementById('taste-save-status').textContent = '(unsaved)';
+        }
+
+        function markSettingsDirty() {
+            settingsDirty = true;
+            document.getElementById('settings-save-status').textContent = '(unsaved)';
+        }
+
+        // =============================================================
+        // SAVE BUTTONS
+        // =============================================================
+        function setupSaveButtons() {
+            // Save taste
+            document.getElementById('save-taste-btn').addEventListener('click', async () => {
+                const content = document.getElementById('taste-textarea').value;
+                try {
+                    await API.post('/api/profile/taste', { content });
+                    profileDirty = false;
+                    document.getElementById('taste-save-status').textContent = 'Saved!';
+                    setTimeout(() => {
+                        document.getElementById('taste-save-status').textContent = '';
+                    }, 2000);
+                } catch (e) {
+                    alert('Failed to save taste');
+                }
+            });
+
+            // Save settings
+            document.getElementById('save-settings-btn').addEventListener('click', async () => {
+                const settings = {
+                    model: document.getElementById('model-select').value,
+                    total_count: parseInt(document.getElementById('count-slider').value),
+                    feedback_server_port: parseInt(document.getElementById('port-input').value) || 9876,
+                    thinking_tokens: document.getElementById('thinking-input').value || null,
+                    output: {
+                        default_format: document.getElementById('format-select').value,
+                        default_destination: document.getElementById('destination-select').value
+                    },
+                    approaches: {},
+                    media: {}
+                };
+
+                // Gather approach toggles
+                document.querySelectorAll('[data-approach]').forEach(toggle => {
+                    settings.approaches[toggle.dataset.approach] = { enabled: toggle.classList.contains('active') };
+                });
+
+                // Gather media toggles
+                document.querySelectorAll('[data-media]').forEach(toggle => {
+                    settings.media[toggle.dataset.media] = { enabled: toggle.classList.contains('active') };
+                });
+
+                try {
+                    await API.patch('/api/settings', settings);
+                    settingsDirty = false;
+                    document.getElementById('settings-save-status').textContent = 'Saved!';
+                    setTimeout(() => {
+                        document.getElementById('settings-save-status').textContent = '';
+                    }, 2000);
+                } catch (e) {
+                    alert('Failed to save settings');
+                }
+            });
+
+            // Reset settings
+            document.getElementById('reset-settings-btn').addEventListener('click', async () => {
+                if (!confirm('Reset all settings to defaults?')) return;
+                try {
+                    await API.post('/api/settings/reset', {});
+                    await loadSettings();
+                    settingsDirty = false;
+                    document.getElementById('settings-save-status').textContent = 'Reset!';
+                } catch (e) {
+                    alert('Failed to reset settings');
+                }
+            });
         }
 
         // =============================================================
         // FEEDBACK
         // =============================================================
-
         async function feedback(button, rating) {
-            const card = button.closest('.card');
+            const card = button.closest('.discovery-card');
             const url = card.dataset.url;
 
             try {
@@ -272,12 +706,11 @@ Customize styling with: serendipity settings style --edit
                 });
 
                 if (response.ok) {
-                    const buttons = card.querySelectorAll('.card-actions button');
+                    const buttons = card.querySelectorAll('.feedback-btn');
                     buttons.forEach(btn => {
-                        btn.disabled = true;
-                        btn.classList.remove('liked', 'disliked');
+                        btn.classList.remove('active');
                     });
-                    button.classList.add(rating);
+                    button.classList.add('active');
 
                     // Track feedback
                     const existingIdx = sessionFeedback.findIndex(f => f.url === url);
@@ -304,37 +737,114 @@ Customize styling with: serendipity settings style --edit
         // MORE RECOMMENDATIONS
         // =============================================================
 
-        async function requestMore(type) {
-            const loading = document.getElementById('loading');
-            const grid = document.getElementById('recommendations');
-            const btn = document.querySelector(`.more-btn[onclick*="${type}"]`);
+        /**
+         * Compute a simple diff between two text strings.
+         * Returns null if no changes, otherwise returns a formatted diff string.
+         */
+        function computeDiff(oldText, newText) {
+            if (oldText === newText) return null;
 
-            if (btn) btn.disabled = true;
-            loading.classList.add('active');
+            const oldLines = oldText.split('\n');
+            const newLines = newText.split('\n');
+
+            const removed = [];
+            const added = [];
+
+            // Simple line-by-line diff
+            const oldSet = new Set(oldLines);
+            const newSet = new Set(newLines);
+
+            for (const line of oldLines) {
+                if (!newSet.has(line) && line.trim()) {
+                    removed.push('- ' + line);
+                }
+            }
+            for (const line of newLines) {
+                if (!oldSet.has(line) && line.trim()) {
+                    added.push('+ ' + line);
+                }
+            }
+
+            if (removed.length === 0 && added.length === 0) return null;
+
+            return [...removed, ...added].join('\n');
+        }
+
+        /**
+         * Build the profile diffs object for the /more request.
+         * Only includes sections that have changed since last request.
+         */
+        function buildProfileDiffs() {
+            const currentTaste = document.getElementById('taste-textarea').value;
+            const diffs = {};
+
+            const tasteDiff = computeDiff(lastSentTaste, currentTaste);
+            if (tasteDiff) {
+                diffs.taste = tasteDiff;
+            }
+
+            // Update lastSentTaste for next comparison
+            lastSentTaste = currentTaste;
+
+            return Object.keys(diffs).length > 0 ? diffs : null;
+        }
+
+        async function requestMore(type) {
+            const loading = document.getElementById('loading-hint');
+            const grid = document.getElementById('recommendations');
+            const btn = document.getElementById('generate-btn');
+            const directivesInput = document.getElementById('directives-input');
+
+            btn.disabled = true;
+            loading.classList.add('visible');
+
+            // Remove "new-batch" class from previous batch
+            document.querySelectorAll('.discovery-card.new-batch').forEach(card => {
+                card.classList.remove('new-batch');
+            });
+
+            // Increment batch ID
+            currentBatchId++;
+
+            // Build request payload
+            const payload = {
+                session_id: SESSION_ID,
+                type: type,
+                count: 5,
+                session_feedback: sessionFeedback
+            };
+
+            // Add profile diffs if any
+            const profileDiffs = buildProfileDiffs();
+            if (profileDiffs) {
+                payload.profile_diffs = profileDiffs;
+            }
+
+            // Add custom directives if provided
+            const directives = directivesInput.value.trim();
+            if (directives) {
+                payload.custom_directives = directives;
+            }
 
             try {
                 const response = await fetch(`${API_BASE}/more`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        session_id: SESSION_ID,
-                        type: type,
-                        count: 5,
-                        session_feedback: sessionFeedback
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 if (response.ok) {
                     const data = await response.json();
                     if (data.recommendations && data.recommendations.length > 0) {
-                        data.recommendations.forEach(rec => {
-                            const card = createCard(rec, type);
+                        data.recommendations.forEach((rec, idx) => {
+                            const card = createCard(rec, type, idx, true);
                             grid.appendChild(card);
                             statsShown++;
                         });
                         updateStats();
-                        applyFilters(); // Re-apply filters to new cards
                     }
+                    // Clear directives after successful request
+                    directivesInput.value = '';
                 } else {
                     const error = await response.json();
                     alert('Could not get more: ' + (error.error || 'Unknown error'));
@@ -343,53 +853,57 @@ Customize styling with: serendipity settings style --edit
                 console.error('Request more error:', e);
                 alert('Could not get more recommendations.');
             } finally {
-                if (btn) btn.disabled = false;
-                loading.classList.remove('active');
+                btn.disabled = false;
+                loading.classList.remove('visible');
             }
         }
 
-        function createCard(rec, approach) {
-            const card = document.createElement('div');
-            card.className = 'card';
+        function createCard(rec, approach, idx, isNewBatch = false) {
+            const card = document.createElement('article');
+            let className = `discovery-card card-${(idx % 6) + 1}`;
+            if (isNewBatch) {
+                className += ' new-batch';
+            }
+            card.className = className;
             card.dataset.url = rec.url;
             card.dataset.approach = approach;
             card.dataset.media = rec.type || 'article';
 
-            const approachLabel = approach === 'convergent' ? 'More Like This' : 'Surprise';
+            const approachLabel = approach === 'convergent' ? 'Convergent' : 'Divergent';
             const mediaLabel = rec.type ? rec.type.charAt(0).toUpperCase() + rec.type.slice(1) : 'Article';
-
-            let thumbnailHtml = '';
-            if (rec.thumbnail_url) {
-                thumbnailHtml = `<div class="card-media"><img src="${rec.thumbnail_url}" alt=""></div>`;
-            }
-
-            let titleHtml = rec.title
-                ? `<a href="${rec.url}" class="card-link" target="_blank">${escapeHtml(rec.title)}</a>`
-                : `<a href="${rec.url}" class="card-link card-url" target="_blank">${escapeHtml(rec.url)}</a>`;
 
             let metaHtml = '';
             if (rec.metadata) {
                 const items = Object.entries(rec.metadata)
                     .filter(([k, v]) => v)
-                    .map(([k, v]) => `<span>${escapeHtml(k)}: ${escapeHtml(v)}</span>`)
+                    .map(([k, v]) => `<span>${escapeHtml(String(v))}</span>`)
                     .join('');
                 if (items) metaHtml = `<div class="card-meta">${items}</div>`;
             }
 
             card.innerHTML = `
-                <div class="card-tags">
-                    <span class="tag approach ${approach}">${approachLabel}</span>
-                    <span class="tag media ${rec.type || 'article'}">${mediaLabel}</span>
+                <div class="card-feedback">
+                    <button class="feedback-btn like" title="Like" onclick="feedback(this, 'liked')">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path>
+                        </svg>
+                    </button>
+                    <button class="feedback-btn dislike" title="Dislike" onclick="feedback(this, 'disliked')">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path>
+                        </svg>
+                    </button>
                 </div>
-                ${thumbnailHtml}
-                <div class="card-content">
-                    ${titleHtml}
+                <div class="card-body">
+                    <div class="card-tags">
+                        <span class="card-tag approach">${approachLabel}</span>
+                        <span class="card-tag media">${mediaLabel}</span>
+                    </div>
+                    <h3 class="card-title">
+                        <a href="${escapeHtml(rec.url)}" target="_blank">${escapeHtml(rec.title || rec.url)}</a>
+                    </h3>
                     ${metaHtml}
-                    <p class="card-reason">${escapeHtml(rec.reason)}</p>
-                </div>
-                <div class="card-actions">
-                    <button onclick="feedback(this, 'liked')">👍</button>
-                    <button onclick="feedback(this, 'disliked')">👎</button>
+                    <p class="card-description">${escapeHtml(rec.reason)}</p>
                 </div>
             `;
 
@@ -397,6 +911,7 @@ Customize styling with: serendipity settings style --edit
         }
 
         function escapeHtml(text) {
+            if (!text) return '';
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;

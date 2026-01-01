@@ -1,0 +1,21 @@
+# MCP server context source template
+# Used by: serendipity settings add source --name whorl --type mcp
+
+type: mcp
+enabled: false
+description: "{description}"
+server:
+  url: "{server_url}"
+  type: http
+health_check:
+  endpoint: /health
+  timeout: 2.0
+port:
+  default: {port}
+  max_retries: 10
+auto_start:
+  enabled: false
+  command: ["{cli_command}", "serve", "--port", "{{port}}"]
+tools:
+  allowed: []
+prompt_hint: "{prompt_hint}"

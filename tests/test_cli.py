@@ -448,6 +448,62 @@ class TestDiscoverCommand:
             result = runner.invoke(app, ["discover", "--help"])
             assert "--model" in result.stdout
 
+    def test_discover_count_flag_overrides_settings(self, temp_storage_with_profile):
+        """Test that --count flag overrides settings.total_count."""
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import Recommendation
+
+        storage, tmpdir = temp_storage_with_profile
+
+        # Create context file
+        context_file = tmpdir / "context.txt"
+        context_file.write_text("test context")
+
+        # Create output directory and HTML file
+        output_dir = tmpdir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "test.html").write_text("<html></html>")
+
+        mock_result = DiscoveryResult(
+            convergent=[Recommendation(url="https://example.com", reason="test", approach="convergent")],
+            divergent=[],
+            session_id="test-session",
+            cost_usd=0.01,
+            html_path=output_dir / "test.html",
+        )
+
+        with patch("serendipity.cli.StorageManager") as mock_cls, \
+             patch("serendipity.cli.SerendipityAgent") as mock_agent_cls, \
+             patch("serendipity.cli.ContextSourceManager") as mock_ctx_cls:
+            mock_cls.return_value = storage
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = mock_result
+            mock_agent.output_dir = output_dir
+            mock_agent_cls.return_value = mock_agent
+
+            mock_ctx_manager = MagicMock()
+            mock_ctx_manager.get_enabled_source_names.return_value = []
+            mock_ctx_manager.get_mcp_servers.return_value = {}
+            mock_ctx_manager.get_allowed_tools.return_value = ["WebSearch", "WebFetch"]
+            mock_ctx_manager.sources = {}
+
+            async def mock_init(*args, **kwargs):
+                return []
+            async def mock_build_context(*args, **kwargs):
+                return ("", [])
+
+            mock_ctx_manager.initialize = mock_init
+            mock_ctx_manager.build_context = mock_build_context
+            mock_ctx_cls.return_value = mock_ctx_manager
+
+            # Invoke with --count 3 (use browser destination to avoid stdout.write mocking issues)
+            result = runner.invoke(app, ["discover", "--count", "3", str(context_file)])
+
+            # Verify agent was created with types_config that has total_count=3
+            assert mock_agent_cls.called
+            agent_call_kwargs = mock_agent_cls.call_args.kwargs
+            assert agent_call_kwargs["types_config"].total_count == 3
+
     def test_discover_shows_session_id(self, temp_storage_with_profile):
         """Test that discover command outputs session ID and resume command."""
         from serendipity.agent import DiscoveryResult

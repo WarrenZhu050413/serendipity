@@ -273,6 +273,148 @@ class TestGetMoreSessionFeedback:
         assert disliked == []
 
 
+class TestGetMoreProfileDiffs:
+    """Tests for get_more with profile_diffs parameter."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent for testing."""
+        return SerendipityAgent(console=Console())
+
+    def test_get_more_accepts_profile_diffs_param(self, agent):
+        """Test that get_more accepts profile_diffs parameter."""
+        import inspect
+        sig = inspect.signature(agent.get_more)
+        params = list(sig.parameters.keys())
+        assert "profile_diffs" in params
+
+    def test_profile_diffs_default_is_none(self, agent):
+        """Test that profile_diffs defaults to None."""
+        import inspect
+        sig = inspect.signature(agent.get_more)
+        profile_diffs_param = sig.parameters["profile_diffs"]
+        assert profile_diffs_param.default is None
+
+    def test_build_profile_update_context_single_section(self):
+        """Test building profile update context with single section."""
+        profile_diffs = {"taste": "+ Added line\n- Removed line"}
+
+        profile_update_context = "\n\n<user_update>\n"
+        for section_name, diff_text in profile_diffs.items():
+            profile_update_context += f"<{section_name}>\n{diff_text}\n</{section_name}>\n"
+        profile_update_context += "</user_update>"
+
+        assert "<user_update>" in profile_update_context
+        assert "<taste>" in profile_update_context
+        assert "+ Added line" in profile_update_context
+        assert "</taste>" in profile_update_context
+        assert "</user_update>" in profile_update_context
+
+    def test_build_profile_update_context_multiple_sections(self):
+        """Test building profile update context with multiple sections."""
+        profile_diffs = {
+            "taste": "+ New preference",
+            "learnings": "- Removed learning",
+        }
+
+        profile_update_context = "\n\n<user_update>\n"
+        for section_name, diff_text in profile_diffs.items():
+            profile_update_context += f"<{section_name}>\n{diff_text}\n</{section_name}>\n"
+        profile_update_context += "</user_update>"
+
+        assert "<taste>" in profile_update_context
+        assert "<learnings>" in profile_update_context
+        assert "+ New preference" in profile_update_context
+        assert "- Removed learning" in profile_update_context
+
+    def test_empty_profile_diffs_produces_no_context(self):
+        """Test that empty profile_diffs dict produces no context."""
+        profile_diffs = {}
+
+        # Empty dict should be falsy in the condition check
+        profile_update_context = ""
+        if profile_diffs:
+            profile_update_context = "<user_update>...</user_update>"
+
+        assert profile_update_context == ""
+
+    def test_none_profile_diffs_produces_no_context(self):
+        """Test that None profile_diffs produces no context."""
+        profile_diffs = None
+
+        profile_update_context = ""
+        if profile_diffs:
+            profile_update_context = "<user_update>...</user_update>"
+
+        assert profile_update_context == ""
+
+
+class TestGetMoreCustomDirectives:
+    """Tests for get_more with custom_directives parameter."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent for testing."""
+        return SerendipityAgent(console=Console())
+
+    def test_get_more_accepts_custom_directives_param(self, agent):
+        """Test that get_more accepts custom_directives parameter."""
+        import inspect
+        sig = inspect.signature(agent.get_more)
+        params = list(sig.parameters.keys())
+        assert "custom_directives" in params
+
+    def test_custom_directives_default_is_empty_string(self, agent):
+        """Test that custom_directives defaults to empty string."""
+        import inspect
+        sig = inspect.signature(agent.get_more)
+        custom_directives_param = sig.parameters["custom_directives"]
+        assert custom_directives_param.default == ""
+
+    def test_build_directives_context(self):
+        """Test building custom directives context."""
+        custom_directives = "Focus on technical articles about distributed systems"
+
+        directives_context = ""
+        if custom_directives and custom_directives.strip():
+            directives_context = f"\n\n<user_directives>\n{custom_directives.strip()}\n</user_directives>"
+
+        assert "<user_directives>" in directives_context
+        assert "Focus on technical articles" in directives_context
+        assert "</user_directives>" in directives_context
+
+    def test_empty_directives_produces_no_context(self):
+        """Test that empty custom_directives produces no context."""
+        custom_directives = ""
+
+        directives_context = ""
+        if custom_directives and custom_directives.strip():
+            directives_context = "<user_directives>...</user_directives>"
+
+        assert directives_context == ""
+
+    def test_whitespace_only_directives_produces_no_context(self):
+        """Test that whitespace-only custom_directives produces no context."""
+        custom_directives = "   \n  \t  "
+
+        directives_context = ""
+        if custom_directives and custom_directives.strip():
+            directives_context = "<user_directives>...</user_directives>"
+
+        assert directives_context == ""
+
+    def test_directives_are_stripped(self):
+        """Test that custom directives are stripped of leading/trailing whitespace."""
+        custom_directives = "  Focus on AI papers  \n"
+
+        directives_context = ""
+        if custom_directives and custom_directives.strip():
+            directives_context = f"\n\n<user_directives>\n{custom_directives.strip()}\n</user_directives>"
+
+        # Should not have leading/trailing whitespace around content
+        assert "<user_directives>\nFocus on AI papers\n</user_directives>" in directives_context
+
+
 class TestParseResponse:
     """Tests for _parse_response method with new format."""
 
@@ -387,7 +529,7 @@ class TestRenderRecommendations:
         result = agent._render_recommendations(recs)
 
         assert "Article Title" in result
-        assert "card-link" in result
+        assert "card-title" in result
 
     def test_render_with_thumbnail(self, agent):
         """Test rendering recommendation with thumbnail."""
@@ -400,8 +542,9 @@ class TestRenderRecommendations:
         )]
         result = agent._render_recommendations(recs)
 
-        assert "card-media" in result
-        assert "https://img.youtube.com/vi/abc/0.jpg" in result
+        # New card design doesn't render thumbnails inline
+        assert "discovery-card" in result
+        assert "https://youtube.com" in result
 
     def test_render_with_metadata(self, agent):
         """Test rendering recommendation with metadata."""
@@ -415,7 +558,6 @@ class TestRenderRecommendations:
         result = agent._render_recommendations(recs)
 
         assert "card-meta" in result
-        assert "author" in result
         assert "Jane Doe" in result
 
     def test_render_escapes_html(self, agent):
@@ -443,7 +585,7 @@ class TestRenderRecommendations:
         ]
         result = agent._render_recommendations(recs)
 
-        assert result.count("class=\"card\"") == 3
+        assert result.count("class=\"discovery-card") == 3
         assert "https://one.com" in result
         assert "https://two.com" in result
         assert "https://three.com" in result

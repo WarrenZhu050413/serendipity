@@ -44,13 +44,12 @@ class TestGetTemplate:
         template = get_base_template()
         assert template == get_template("base.html")
 
-    def test_template_cached(self):
-        """Test that template loading is cached."""
-        # Call twice
+    def test_template_loads_consistently(self):
+        """Test that template loading returns consistent content."""
+        # Call twice - content should match (not cached, but same file)
         template1 = get_template("base.html")
         template2 = get_template("base.html")
-        # Should return same object (cached)
-        assert template1 is template2
+        assert template1 == template2
 
 
 class TestGetPrompt:
@@ -76,11 +75,11 @@ class TestGetPrompt:
         prompt = get_discovery_prompt()
         assert prompt == get_prompt("discovery.txt")
 
-    def test_prompt_cached(self):
-        """Test that prompt loading is cached."""
+    def test_prompt_loads_consistently(self):
+        """Test that prompt loading returns consistent content."""
         prompt1 = get_prompt("discovery.txt")
         prompt2 = get_prompt("discovery.txt")
-        assert prompt1 is prompt2
+        assert prompt1 == prompt2
 
 
 class TestGetFrontendDesign:
@@ -128,11 +127,11 @@ class TestGetDefaultConfig:
         config = get_default_settings_yaml()
         assert config == get_default_config("settings.yaml")
 
-    def test_config_cached(self):
-        """Test that config loading is cached."""
+    def test_config_loads_consistently(self):
+        """Test that config loading returns consistent content."""
         config1 = get_default_config("settings.yaml")
         config2 = get_default_config("settings.yaml")
-        assert config1 is config2
+        assert config1 == config2
 
 
 class TestResourcesIntegration:

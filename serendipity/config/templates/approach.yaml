@@ -1,0 +1,8 @@
+# Approach type template
+# Used by: serendipity settings add approach --name serendipitous --display "Pure Luck"
+
+display_name: "{display_name}"
+enabled: true
+prompt_hint: |
+  For {display_name} recommendations:
+  {prompt_hint}

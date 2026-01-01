@@ -1,0 +1,13 @@
+# Loader context source template
+# Used by: serendipity settings add source --name notes --type loader
+
+type: loader
+enabled: true
+description: "{description}"
+loader: serendipity.context_sources.builtins.file_loader
+prompt_hint: |
+  <{name}>
+  {{content}}
+  </{name}>
+options:
+  path: "{path}"

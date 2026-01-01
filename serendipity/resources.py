@@ -4,11 +4,9 @@ Uses importlib.resources for robust package data access that works
 whether installed normally, editable, or bundled.
 """
 
-from functools import lru_cache
 from importlib.resources import files
 
 
-@lru_cache
 def get_template(name: str) -> str:
     """Load a template file from serendipity/templates/.
 
@@ -21,7 +19,6 @@ def get_template(name: str) -> str:
     return files("serendipity.templates").joinpath(name).read_text()
 
 
-@lru_cache
 def get_prompt(name: str) -> str:
     """Load a prompt file from serendipity/prompts/.
 
@@ -63,7 +60,6 @@ def get_system_prompt() -> str:
     return get_prompt("system.txt")
 
 
-@lru_cache
 def get_default_config(name: str) -> str:
     """Load a default config file from serendipity/config/defaults/.
 
@@ -81,7 +77,6 @@ def get_default_settings_yaml() -> str:
     return get_default_config("settings.yaml")
 
 
-@lru_cache
 def get_config_template(name: str) -> str:
     """Load a config template file from serendipity/config/templates/.
 

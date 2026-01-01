@@ -25,7 +25,7 @@ from rich.console import Console
 
 from serendipity.config.types import TypesConfig
 from serendipity.display import AgentDisplay, DisplayConfig
-from serendipity.models import HtmlStyle, Recommendation
+from serendipity.models import HtmlStyle, Pairing, Recommendation
 from serendipity.prompts.builder import PromptBuilder
 from serendipity.resources import (
     get_base_template,
@@ -66,7 +66,8 @@ class DiscoveryResult:
 
     convergent: list[Recommendation]
     divergent: list[Recommendation]
-    session_id: str
+    pairings: list[Pairing] = field(default_factory=list)
+    session_id: str = ""
     cost_usd: Optional[float] = None
     raw_response: Optional[str] = None
     html_style: Optional[HtmlStyle] = None
@@ -310,6 +311,11 @@ class SerendipityAgent:
             "{recommendations_html}",
             self._render_recommendations(all_recs)
         )
+        # Add pairings section
+        html_content = html_content.replace(
+            "{pairings_html}",
+            self._render_pairings(parsed.get("pairings", []))
+        )
         html_content = html_content.replace("{session_id}", session_id)
         html_content = html_content.replace("{server_port}", str(self.server_port))
 
@@ -325,6 +331,7 @@ class SerendipityAgent:
         return DiscoveryResult(
             convergent=parsed.get("convergent", []),
             divergent=parsed.get("divergent", []),
+            pairings=parsed.get("pairings", []),
             session_id=session_id,
             cost_usd=cost_usd,
             raw_response=full_response,
@@ -338,6 +345,8 @@ class SerendipityAgent:
         rec_type: str,
         count: int = 5,
         session_feedback: list[dict] = None,
+        profile_diffs: dict[str, str] = None,
+        custom_directives: str = "",
     ) -> list[Recommendation]:
         """Get more recommendations by resuming a session.
 
@@ -346,6 +355,8 @@ class SerendipityAgent:
             rec_type: Type of recommendations ("convergent" or "divergent")
             count: Number of additional recommendations
             session_feedback: Feedback from current session [{"url": "...", "feedback": "liked"|"disliked"}]
+            profile_diffs: Dict of {section_name: diff_text} for profile changes since last request
+            custom_directives: User's custom instructions for this batch
 
         Returns:
             List of new recommendations
@@ -368,7 +379,20 @@ class SerendipityAgent:
             if feedback_context:
                 feedback_context += "\n\nUse this feedback to refine your next recommendations."
 
-        prompt = f"""Give me {count} more {type_description} recommendations, different from what you've already suggested.{feedback_context}
+        # Build profile update context
+        profile_update_context = ""
+        if profile_diffs:
+            profile_update_context = "\n\n<user_update>\n"
+            for section_name, diff_text in profile_diffs.items():
+                profile_update_context += f"<{section_name}>\n{diff_text}\n</{section_name}>\n"
+            profile_update_context += "</user_update>\n\nThe user has updated their profile. Consider these changes when making recommendations."
+
+        # Build custom directives context
+        directives_context = ""
+        if custom_directives and custom_directives.strip():
+            directives_context = f"\n\n<user_directives>\n{custom_directives.strip()}\n</user_directives>\n\nFollow these custom directives from the user for this batch of recommendations."
+
+        prompt = f"""Give me {count} more {type_description} recommendations, different from what you've already suggested.{feedback_context}{profile_update_context}{directives_context}
 
 Output as JSON:
 {{
@@ -462,18 +486,19 @@ Output as JSON:
         ]
 
     def _parse_response(self, text: str) -> dict:
-        """Extract recommendations from response text.
+        """Extract recommendations and pairings from response text.
 
         Parses <recommendations> JSON section.
 
         Returns dict with:
             - convergent: list[Recommendation]
             - divergent: list[Recommendation]
+            - pairings: list[Pairing]
         """
-        result = {"convergent": [], "divergent": []}
+        result = {"convergent": [], "divergent": [], "pairings": []}
 
-        def parse_recs(data: dict) -> tuple[list[Recommendation], list[Recommendation]]:
-            """Parse raw dicts into Recommendation objects."""
+        def parse_all(data: dict) -> tuple[list[Recommendation], list[Recommendation], list[Pairing]]:
+            """Parse raw dicts into Recommendation and Pairing objects."""
             convergent = [
                 Recommendation.from_dict(r, approach="convergent")
                 for r in data.get("convergent", [])
@@ -482,7 +507,11 @@ Output as JSON:
                 Recommendation.from_dict(r, approach="divergent")
                 for r in data.get("divergent", [])
             ]
-            return convergent, divergent
+            pairings = [
+                Pairing.from_dict(p)
+                for p in data.get("pairings", [])
+            ]
+            return convergent, divergent, pairings
 
         # Extract recommendations JSON from <recommendations> tags
         rec_match = re.search(r"<recommendations>\s*(.*?)\s*</recommendations>", text, re.DOTALL)
@@ -494,7 +523,7 @@ Output as JSON:
                 rec_content = code_match.group(1)
             try:
                 data = json.loads(rec_content)
-                result["convergent"], result["divergent"] = parse_recs(data)
+                result["convergent"], result["divergent"], result["pairings"] = parse_all(data)
             except json.JSONDecodeError:
                 pass  # Will fall through to legacy formats
 
@@ -505,7 +534,7 @@ Output as JSON:
             if output_match:
                 try:
                     data = json.loads(output_match.group(1))
-                    result["convergent"], result["divergent"] = parse_recs(data)
+                    result["convergent"], result["divergent"], result["pairings"] = parse_all(data)
                 except json.JSONDecodeError:
                     pass
 
@@ -515,7 +544,7 @@ Output as JSON:
                 if json_match:
                     try:
                         data = json.loads(json_match.group(1))
-                        result["convergent"], result["divergent"] = parse_recs(data)
+                        result["convergent"], result["divergent"], result["pairings"] = parse_all(data)
                     except json.JSONDecodeError:
                         pass
 
@@ -525,14 +554,14 @@ Output as JSON:
         return result
 
     def _render_recommendations(self, recs: list[Recommendation]) -> str:
-        """Render recommendations list as HTML with slot-based cards.
+        """Render recommendations list as HTML with discovery cards.
 
         Args:
             recs: List of Recommendation objects
 
         Returns:
-            HTML string with recommendation cards featuring slots for
-            thumbnail, title, metadata, and reason.
+            HTML string with recommendation cards featuring top-right
+            feedback buttons, tags, title, metadata, and description.
         """
         if not recs:
             return ""
@@ -543,12 +572,16 @@ Output as JSON:
 
         # Map approach to display label
         approach_labels = {
-            "convergent": "More Like This",
-            "divergent": "Surprise",
+            "convergent": "Convergent",
+            "divergent": "Divergent",
         }
 
+        # SVG icons for feedback buttons
+        thumbs_up_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>'
+        thumbs_down_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path></svg>'
+
         html_parts = []
-        for rec in recs:
+        for idx, rec in enumerate(recs):
             url = escape_html(rec.url)
             reason = escape_html(rec.reason)
             approach = escape_html(rec.approach)
@@ -558,19 +591,14 @@ Output as JSON:
             approach_label = approach_labels.get(rec.approach, rec.approach.title())
             media_label = rec.media_type.title() if rec.media_type else "Article"
 
-            # Build optional thumbnail slot
-            thumbnail_html = ""
-            if rec.thumbnail_url:
-                thumbnail_html = f'''
-                <div class="card-media">
-                    <img src="{escape_html(rec.thumbnail_url)}" loading="lazy" alt="">
-                </div>'''
+            # Card accent class (cycles through 6 colors)
+            card_class = f"card-{(idx % 6) + 1}"
 
             # Build title/URL display
             if rec.title:
-                title_html = f'<a href="{url}" class="card-link" target="_blank" rel="noopener">{escape_html(rec.title)}</a>'
+                title_html = f'<a href="{url}" target="_blank" rel="noopener">{escape_html(rec.title)}</a>'
             else:
-                title_html = f'<a href="{url}" class="card-link card-url" target="_blank" rel="noopener">{url}</a>'
+                title_html = f'<a href="{url}" target="_blank" rel="noopener">{url}</a>'
 
             # Build metadata slot from type-specific fields
             metadata_html = ""
@@ -578,25 +606,92 @@ Output as JSON:
                 meta_items = []
                 for key, value in rec.metadata.items():
                     if value:
-                        meta_items.append(f'<span>{escape_html(key)}: {escape_html(str(value))}</span>')
+                        meta_items.append(f'<span>{escape_html(str(value))}</span>')
                 if meta_items:
-                    metadata_html = f'<div class="card-meta">{" ".join(meta_items)}</div>'
+                    metadata_html = f'<div class="card-meta">{"".join(meta_items)}</div>'
 
-            html_parts.append(f'''        <div class="card" data-url="{url}" data-approach="{approach}" data-media="{media_type}">
-            <div class="card-tags">
-                <span class="tag approach {approach}">{approach_label}</span>
-                <span class="tag media {media_type}">{media_label}</span>
-            </div>{thumbnail_html}
-            <div class="card-content">
-                {title_html}
-                {metadata_html}
-                <p class="card-reason">{reason}</p>
-            </div>
-            <div class="card-actions">
-                <button onclick="feedback(this, 'liked')">👍</button>
-                <button onclick="feedback(this, 'disliked')">👎</button>
-            </div>
-        </div>''')
+            html_parts.append(f'''                <article class="discovery-card {card_class}" data-url="{url}" data-approach="{approach}" data-media="{media_type}">
+                    <div class="card-feedback">
+                        <button class="feedback-btn like" title="Like" onclick="feedback(this, 'liked')">
+                            {thumbs_up_svg}
+                        </button>
+                        <button class="feedback-btn dislike" title="Dislike" onclick="feedback(this, 'disliked')">
+                            {thumbs_down_svg}
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-tags">
+                            <span class="card-tag approach">{approach_label}</span>
+                            <span class="card-tag media">{media_label}</span>
+                        </div>
+                        <h3 class="card-title">{title_html}</h3>
+                        {metadata_html}
+                        <p class="card-description">{reason}</p>
+                    </div>
+                </article>''')
+        return "\n".join(html_parts)
+
+    def _render_pairings(self, pairings: list[Pairing]) -> str:
+        """Render pairings list as HTML for footer section.
+
+        Args:
+            pairings: List of Pairing objects
+
+        Returns:
+            HTML string with pairing cards
+        """
+        if not pairings:
+            return ""
+
+        def escape_html(text: str) -> str:
+            """Escape HTML special characters."""
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+        # Get icons from config, with fallbacks
+        pairing_icons = {
+            "music": "🎵",
+            "exercise": "🏃",
+            "food": "🍽️",
+            "tip": "💡",
+            "quote": "📜",
+            "action": "🎯",
+        }
+        # Override with config icons if available
+        for p in self.types_config.pairings.values():
+            if p.icon:
+                pairing_icons[p.name] = p.icon
+
+        html_parts = []
+        html_parts.append('<section class="pairings-section">')
+        html_parts.append('<h2 class="pairings-title">Pairings</h2>')
+        html_parts.append('<div class="pairings-grid">')
+
+        for pairing in pairings:
+            icon = pairing_icons.get(pairing.type, "✨")
+            type_label = pairing.type.title()
+            content = escape_html(pairing.content)
+
+            # Build link if URL present
+            if pairing.url:
+                title = escape_html(pairing.title or pairing.url)
+                link_html = f'<a href="{escape_html(pairing.url)}" target="_blank" rel="noopener" class="pairing-link">{title}</a>'
+            else:
+                link_html = ""
+
+            html_parts.append(f'''
+                <article class="pairing-card pairing-{pairing.type}">
+                    <div class="pairing-icon">{icon}</div>
+                    <div class="pairing-body">
+                        <span class="pairing-type">{type_label}</span>
+                        <p class="pairing-content">{content}</p>
+                        {link_html}
+                    </div>
+                </article>
+            ''')
+
+        html_parts.append('</div>')
+        html_parts.append('</section>')
+
         return "\n".join(html_parts)
 
     def render_markdown(self, result: DiscoveryResult) -> str:
@@ -629,6 +724,28 @@ Output as JSON:
             for rec in result.divergent:
                 parts.append(self._format_recommendation_md(rec))
             parts.append("")
+
+        # Pairings section
+        if result.pairings:
+            parts.append("## Pairings")
+            parts.append("")
+            pairing_icons = {
+                "music": "🎵",
+                "exercise": "🏃",
+                "food": "🍽️",
+                "tip": "💡",
+                "quote": "📜",
+                "action": "🎯",
+            }
+            for pairing in result.pairings:
+                icon = pairing_icons.get(pairing.type, "✨")
+                parts.append(f"### {icon} {pairing.type.title()}")
+                parts.append("")
+                parts.append(pairing.content)
+                if pairing.url:
+                    title = pairing.title or pairing.url
+                    parts.append(f"[{title}]({pairing.url})")
+                parts.append("")
 
         return "\n".join(parts)
 
@@ -699,6 +816,16 @@ Output as JSON:
                     "metadata": r.metadata,
                 }
                 for r in result.divergent
+            ],
+            "pairings": [
+                {
+                    "type": p.type,
+                    "content": p.content,
+                    "url": p.url,
+                    "title": p.title,
+                    "metadata": p.metadata,
+                }
+                for p in result.pairings
             ],
         }
         return json.dumps(output, indent=2)

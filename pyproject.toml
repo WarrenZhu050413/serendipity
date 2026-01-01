@@ -1,6 +1,6 @@
 [project]
 name = "serendipity"
-version = "0.2.0"
+version = "0.3.0"
 description = "Personal Serendipity Engine - discover convergent and divergent content recommendations"
 authors = [
     {name = "Warren Zhu", email = "wzhu@college.harvard.edu"}

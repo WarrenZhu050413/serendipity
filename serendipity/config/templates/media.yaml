@@ -1,0 +1,12 @@
+# Media type template
+# Used by: serendipity settings add media --name papers --display "Academic Papers"
+
+display_name: "{display_name}"
+enabled: true
+sources:
+  - tool: WebSearch
+    hints: "{search_hints}"
+prompt_hint: "{prompt_hint}"
+# metadata_schema:
+#   - name: author
+#     required: false
