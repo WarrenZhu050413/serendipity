@@ -14,7 +14,7 @@ runner = CliRunner()
 
 
 class TestLearningsCommand:
-    """Tests for the learnings command."""
+    """Tests for the learnings command (via profile get learnings)."""
 
     @pytest.fixture
     def temp_storage(self):
@@ -22,6 +22,9 @@ class TestLearningsCommand:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = StorageManager(base_dir=Path(tmpdir))
             storage.ensure_dirs()
+            # Create default settings so TypesConfig works
+            from serendipity.config.types import TypesConfig
+            TypesConfig.write_defaults(storage.settings_path)
             yield storage, Path(tmpdir)
 
     def test_learnings_show_empty(self, temp_storage):
@@ -29,7 +32,7 @@ class TestLearningsCommand:
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "learnings"])
+            result = runner.invoke(app, ["profile", "get", "learnings"])
             assert result.exit_code == 0
             assert "No learnings yet" in result.stdout
 
@@ -40,7 +43,7 @@ class TestLearningsCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "learnings"])
+            result = runner.invoke(app, ["profile", "get", "learnings"])
             assert result.exit_code == 0
             assert "Test Learning" in result.stdout
 
@@ -51,7 +54,7 @@ class TestLearningsCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "learnings", "--clear"], input="n\n")
+            result = runner.invoke(app, ["profile", "get", "learnings", "--clear"], input="n\n")
             assert result.exit_code == 0
             assert "Cancelled" in result.stdout
             # Learning should still exist
@@ -64,23 +67,22 @@ class TestLearningsCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "learnings", "--clear"], input="y\n")
+            result = runner.invoke(app, ["profile", "get", "learnings", "--clear"], input="y\n")
             assert result.exit_code == 0
             assert "cleared" in result.stdout.lower()
             # Learning should be gone
             assert storage.load_learnings() == ""
 
     def test_learnings_help(self):
-        """Test learnings command help."""
-        result = runner.invoke(app, ["profile", "learnings", "--help"])
+        """Test profile get command help (includes learnings options)."""
+        result = runner.invoke(app, ["profile", "get", "--help"])
         assert result.exit_code == 0
         assert "interactive" in result.stdout.lower()
-        assert "edit" in result.stdout.lower()
         assert "clear" in result.stdout.lower()
 
 
 class TestHistoryCommand:
-    """Tests for the history command."""
+    """Tests for the history command (via profile get history)."""
 
     @pytest.fixture
     def temp_storage_with_history(self):
@@ -88,6 +90,9 @@ class TestHistoryCommand:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = StorageManager(base_dir=Path(tmpdir))
             storage.ensure_dirs()
+            # Create default settings so TypesConfig works
+            from serendipity.config.types import TypesConfig
+            TypesConfig.write_defaults(storage.settings_path)
             entries = [
                 HistoryEntry(
                     url="https://example1.com",
@@ -114,7 +119,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "history"])
+            result = runner.invoke(app, ["profile", "get", "history"])
             assert result.exit_code == 0
             assert "example1.com" in result.stdout
             assert "example2.com" in result.stdout
@@ -124,7 +129,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "history", "--liked"])
+            result = runner.invoke(app, ["profile", "get", "history", "--liked"])
             assert result.exit_code == 0
             assert "example1.com" in result.stdout
             assert "example2.com" not in result.stdout
@@ -134,7 +139,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "history", "--disliked"])
+            result = runner.invoke(app, ["profile", "get", "history", "--disliked"])
             assert result.exit_code == 0
             assert "example1.com" not in result.stdout
             assert "example2.com" in result.stdout
@@ -256,7 +261,7 @@ class TestSettingsCommand:
 
 
 class TestTasteCommand:
-    """Tests for the taste command."""
+    """Tests for the taste command (via profile get taste)."""
 
     @pytest.fixture
     def temp_storage(self):
@@ -264,17 +269,19 @@ class TestTasteCommand:
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = StorageManager(base_dir=Path(tmpdir))
             storage.ensure_dirs()
+            # Create default settings so TypesConfig works
+            from serendipity.config.types import TypesConfig
+            TypesConfig.write_defaults(storage.settings_path)
             yield storage, Path(tmpdir)
 
     def test_taste_show_empty(self, temp_storage):
-        """Test showing taste when none exist (shows template if no taste file)."""
+        """Test showing taste when none exist."""
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "taste", "--show"])
+            result = runner.invoke(app, ["profile", "get", "taste"])
             assert result.exit_code == 0
-            # Either shows "No taste profile" or shows default content
-            # The actual behavior depends on whether taste file exists
+            # Shows "file not found" or empty message
             assert result.exit_code == 0
 
     def test_taste_show_with_content(self, temp_storage):
@@ -285,9 +292,12 @@ class TestTasteCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "taste", "--show"])
-            assert result.exit_code == 0
-            assert "minimalism" in result.stdout
+            # Also patch is_source_editable to return the temp path
+            with patch("serendipity.cli.is_source_editable") as mock_editable:
+                mock_editable.return_value = (True, storage.taste_path)
+                result = runner.invoke(app, ["profile", "get", "taste"])
+                assert result.exit_code == 0
+                assert "minimalism" in result.stdout
 
 
 class TestProfileCommand:
@@ -438,6 +448,60 @@ class TestDiscoverCommand:
             result = runner.invoke(app, ["discover", "--help"])
             assert "--model" in result.stdout
 
+    def test_discover_shows_session_id(self, temp_storage_with_profile):
+        """Test that discover command outputs session ID and resume command."""
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import Recommendation
+
+        storage, tmpdir = temp_storage_with_profile
+
+        # Create context file
+        context_file = tmpdir / "context.txt"
+        context_file.write_text("test context")
+
+        # Create a mock discovery result with a session ID
+        mock_result = DiscoveryResult(
+            convergent=[Recommendation(url="https://example.com", reason="test", approach="convergent")],
+            divergent=[],
+            session_id="test-session-123",
+            cost_usd=0.01,
+            html_path=tmpdir / "output" / "test.html",
+        )
+
+        # Ensure HTML file exists
+        output_dir = tmpdir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "test.html").write_text("<html></html>")
+
+        with patch("serendipity.cli.StorageManager") as mock_cls, \
+             patch("serendipity.cli.SerendipityAgent") as mock_agent_cls, \
+             patch("serendipity.cli.ContextSourceManager") as mock_ctx_cls:
+            mock_cls.return_value = storage
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = mock_result
+            mock_agent.output_dir = output_dir
+            mock_agent_cls.return_value = mock_agent
+            mock_ctx_manager = MagicMock()
+            mock_ctx_manager.get_enabled_source_names.return_value = []
+            mock_ctx_manager.get_mcp_servers.return_value = {}
+            mock_ctx_manager.get_allowed_tools.return_value = ["WebSearch", "WebFetch"]
+            mock_ctx_manager.sources = {}
+
+            async def mock_init(*args, **kwargs):
+                return []
+            async def mock_build_context(*args, **kwargs):
+                return ("", [])
+
+            mock_ctx_manager.initialize = mock_init
+            mock_ctx_manager.build_context = mock_build_context
+            mock_ctx_cls.return_value = mock_ctx_manager
+
+            result = runner.invoke(app, ["discover", "-o", "terminal", str(context_file)])
+
+            # Verify session info is shown
+            assert "Session:" in result.stdout or "test-session-123" in result.stdout
+            assert "claude -r test-session-123" in result.stdout
+
 
 class TestCLIIntegration:
     """Integration tests for CLI flows."""
@@ -456,12 +520,11 @@ class TestCLIIntegration:
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
 
-            # Check profile help
+            # Check profile help - now shows generic get/edit commands
             result = runner.invoke(app, ["profile", "--help"])
             assert result.exit_code == 0
-            assert "taste" in result.stdout
-            assert "learnings" in result.stdout
-            assert "history" in result.stdout
+            assert "get" in result.stdout
+            assert "edit" in result.stdout
 
     def test_settings_and_profile_source_sync(self, temp_storage):
         """Test that settings and profile share source enable/disable."""
@@ -480,5 +543,150 @@ class TestCLIIntegration:
             # Check it's enabled
             config = TypesConfig.from_yaml(storage.settings_path)
             assert config.context_sources["whorl"].enabled is True
+
+
+class TestSettingsAddCommand:
+    """Tests for the settings add command."""
+
+    @pytest.fixture
+    def temp_storage(self):
+        """Create a temporary storage directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = StorageManager(base_dir=Path(tmpdir))
+            storage.ensure_dirs()
+            yield storage, Path(tmpdir)
+
+    def test_settings_add_help(self, temp_storage):
+        """Test settings add help displays correctly."""
+        storage, tmpdir = temp_storage
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(app, ["settings", "add", "--help"])
+            assert result.exit_code == 0
+            assert "media" in result.stdout
+            assert "approach" in result.stdout
+            assert "source" in result.stdout
+            assert "--name" in result.stdout
+            assert "--display" in result.stdout
+            assert "--interactive" in result.stdout
+
+    def test_settings_add_media(self, temp_storage):
+        """Test adding a media type."""
+        storage, tmpdir = temp_storage
+        from serendipity import settings as settings_module
+
+        # Patch settings_module to use temp storage
+        with patch.object(
+            settings_module,
+            "get_user_settings_path",
+            return_value=storage.settings_path
+        ):
+            result = runner.invoke(
+                app,
+                ["settings", "add", "media", "-n", "papers", "-d", "Academic Papers"]
+            )
+            assert result.exit_code == 0
+            assert "Added media type" in result.stdout
+            assert "papers" in result.stdout
+
+    def test_settings_add_approach(self, temp_storage):
+        """Test adding an approach type."""
+        storage, tmpdir = temp_storage
+        from serendipity import settings as settings_module
+
+        with patch.object(
+            settings_module,
+            "get_user_settings_path",
+            return_value=storage.settings_path
+        ):
+            result = runner.invoke(
+                app,
+                ["settings", "add", "approach", "-n", "lucky", "-d", "Pure Luck"]
+            )
+            assert result.exit_code == 0
+            assert "Added approach" in result.stdout
+            assert "lucky" in result.stdout
+
+    def test_settings_add_loader_source(self, temp_storage):
+        """Test adding a loader source."""
+        storage, tmpdir = temp_storage
+        from serendipity import settings as settings_module
+
+        with patch.object(
+            settings_module,
+            "get_user_settings_path",
+            return_value=storage.settings_path
+        ):
+            result = runner.invoke(
+                app,
+                ["settings", "add", "source", "-n", "notes", "-t", "loader", "--path", "~/notes.md"]
+            )
+            assert result.exit_code == 0
+            assert "Added loader source" in result.stdout
+            assert "notes" in result.stdout
+
+    def test_settings_add_mcp_source(self, temp_storage):
+        """Test adding an MCP source."""
+        storage, tmpdir = temp_storage
+        from serendipity import settings as settings_module
+
+        with patch.object(
+            settings_module,
+            "get_user_settings_path",
+            return_value=storage.settings_path
+        ):
+            result = runner.invoke(
+                app,
+                ["settings", "add", "source", "-n", "custom", "-t", "mcp"]
+            )
+            assert result.exit_code == 0
+            assert "Added mcp source" in result.stdout
+            assert "custom" in result.stdout
+
+    def test_settings_add_invalid_type(self, temp_storage):
+        """Test error on invalid type."""
+        storage, tmpdir = temp_storage
+        with patch("serendipity.cli.StorageManager") as mock_cls:
+            mock_cls.return_value = storage
+            result = runner.invoke(
+                app,
+                ["settings", "add", "invalid", "-n", "test"]
+            )
+            assert result.exit_code == 1
+            assert "Unknown type" in result.stdout
+
+    def test_settings_add_source_requires_type(self, temp_storage):
+        """Test that source requires --type flag."""
+        storage, tmpdir = temp_storage
+        from serendipity import settings as settings_module
+
+        with patch.object(
+            settings_module,
+            "get_user_settings_path",
+            return_value=storage.settings_path
+        ):
+            result = runner.invoke(
+                app,
+                ["settings", "add", "source", "-n", "test"]
+            )
+            assert result.exit_code == 1
+            assert "Source type required" in result.stdout
+
+    def test_settings_add_loader_requires_path(self, temp_storage):
+        """Test that loader source requires --path flag."""
+        storage, tmpdir = temp_storage
+        from serendipity import settings as settings_module
+
+        with patch.object(
+            settings_module,
+            "get_user_settings_path",
+            return_value=storage.settings_path
+        ):
+            result = runner.invoke(
+                app,
+                ["settings", "add", "source", "-n", "test", "-t", "loader"]
+            )
+            assert result.exit_code == 1
+            assert "Path required" in result.stdout
 
 

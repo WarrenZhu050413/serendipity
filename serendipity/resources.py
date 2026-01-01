@@ -40,6 +40,11 @@ def get_base_template() -> str:
     return get_template("base.html")
 
 
+def get_default_style() -> str:
+    """Get the default CSS stylesheet."""
+    return get_template("style.css")
+
+
 def get_discovery_prompt() -> str:
     """Get the discovery prompt template."""
     return get_prompt("discovery.txt")
@@ -51,6 +56,11 @@ def get_frontend_design() -> str:
         return get_prompt("frontend_design.txt")
     except FileNotFoundError:
         return ""
+
+
+def get_system_prompt() -> str:
+    """Get the system prompt for the agent."""
+    return get_prompt("system.txt")
 
 
 @lru_cache
@@ -69,3 +79,37 @@ def get_default_config(name: str) -> str:
 def get_default_settings_yaml() -> str:
     """Get the default settings.yaml configuration."""
     return get_default_config("settings.yaml")
+
+
+@lru_cache
+def get_config_template(name: str) -> str:
+    """Load a config template file from serendipity/config/templates/.
+
+    Args:
+        name: Template filename (e.g., "media.yaml", "approach.yaml",
+              "loader_source.yaml", "mcp_source.yaml")
+
+    Returns:
+        Template content as string
+    """
+    return files("serendipity.config.templates").joinpath(name).read_text()
+
+
+def get_media_template() -> str:
+    """Get the media type template."""
+    return get_config_template("media.yaml")
+
+
+def get_approach_template() -> str:
+    """Get the approach type template."""
+    return get_config_template("approach.yaml")
+
+
+def get_loader_source_template() -> str:
+    """Get the loader context source template."""
+    return get_config_template("loader_source.yaml")
+
+
+def get_mcp_source_template() -> str:
+    """Get the MCP context source template."""
+    return get_config_template("mcp_source.yaml")

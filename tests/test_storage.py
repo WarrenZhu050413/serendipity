@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from serendipity.storage import HistoryEntry, StorageManager
+from serendipity.storage import HistoryEntry, ProfileManager, StorageManager
 
 
 class TestHistoryEntry:
@@ -328,6 +328,217 @@ class TestStorageManager:
         assert "extracted item" not in context or "not yet in learnings" not in context.split("extracted.com")[0]
 
 
+class TestUpdateFeedback:
+    """Tests for update_feedback method."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def storage(self, temp_dir):
+        """Create a StorageManager with temp directory."""
+        return StorageManager(base_dir=temp_dir)
+
+    def test_update_feedback_no_history(self, storage):
+        """Test updating feedback when no history file exists."""
+        result = storage.update_feedback("https://example.com", "session123", "liked")
+        assert result is False
+
+    def test_update_feedback_entry_found(self, storage):
+        """Test updating feedback for an existing entry."""
+        entries = [
+            HistoryEntry(
+                url="https://example.com",
+                reason="test",
+                type="convergent",
+                feedback=None,
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+            ),
+        ]
+        storage.append_history(entries)
+
+        result = storage.update_feedback("https://example.com", "session123", "liked")
+        assert result is True
+
+        # Verify the update
+        loaded = storage.load_all_history()
+        assert loaded[0].feedback == "liked"
+
+    def test_update_feedback_entry_not_found(self, storage):
+        """Test updating feedback when entry doesn't exist."""
+        entries = [
+            HistoryEntry(
+                url="https://other.com",
+                reason="test",
+                type="convergent",
+                feedback=None,
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+            ),
+        ]
+        storage.append_history(entries)
+
+        result = storage.update_feedback("https://example.com", "session123", "liked")
+        assert result is False
+
+    def test_update_feedback_wrong_session(self, storage):
+        """Test updating feedback when session ID doesn't match."""
+        entries = [
+            HistoryEntry(
+                url="https://example.com",
+                reason="test",
+                type="convergent",
+                feedback=None,
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+            ),
+        ]
+        storage.append_history(entries)
+
+        result = storage.update_feedback("https://example.com", "wrong-session", "liked")
+        assert result is False
+
+
+class TestClearHistory:
+    """Tests for clear_history method."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def storage(self, temp_dir):
+        """Create a StorageManager with temp directory."""
+        return StorageManager(base_dir=temp_dir)
+
+    def test_clear_history_with_entries(self, storage):
+        """Test clearing history when entries exist."""
+        entries = [
+            HistoryEntry(
+                url="https://example.com",
+                reason="test",
+                type="convergent",
+                feedback="liked",
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+            ),
+        ]
+        storage.append_history(entries)
+        assert len(storage.load_all_history()) == 1
+
+        storage.clear_history()
+        assert len(storage.load_all_history()) == 0
+        assert not storage.history_path.exists()
+
+    def test_clear_history_empty(self, storage):
+        """Test clearing history when no file exists."""
+        storage.clear_history()  # Should not raise
+        assert not storage.history_path.exists()
+
+
+class TestBuildHistoryContextEdgeCases:
+    """Tests for build_history_context edge cases."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def storage(self, temp_dir):
+        """Create a StorageManager with temp directory."""
+        return StorageManager(base_dir=temp_dir)
+
+    def test_build_history_context_empty(self, storage):
+        """Test build_history_context with no history or learnings."""
+        context = storage.build_history_context()
+        assert context == ""
+
+    def test_build_history_context_with_disliked(self, storage):
+        """Test build_history_context includes disliked entries."""
+        entries = [
+            HistoryEntry(
+                url="https://disliked.com",
+                reason="not my taste",
+                type="divergent",
+                feedback="disliked",
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+                extracted=False,
+            ),
+        ]
+        storage.append_history(entries)
+
+        context = storage.build_history_context()
+        assert "https://disliked.com" in context
+        assert "Items you didn't like" in context
+
+    def test_build_history_context_warning_callback(self, storage):
+        """Test that warning callback is called for large history."""
+        # Create many entries to exceed word limit
+        entries = []
+        for i in range(500):
+            entries.append(
+                HistoryEntry(
+                    url=f"https://example{i}.com",
+                    reason="This is a long reason " * 20,  # ~80 words per entry
+                    type="convergent",
+                    feedback="liked",
+                    timestamp="2024-01-15T10:30:00Z",
+                    session_id="session123",
+                    extracted=False,
+                )
+            )
+        storage.append_history(entries)
+
+        warnings = []
+        context = storage.build_history_context(
+            max_recent=500,
+            warn_callback=lambda msg: warnings.append(msg)
+        )
+
+        # Should have triggered the warning
+        assert len(warnings) == 1
+        assert "words" in warnings[0]
+
+    def test_build_history_context_mixed_feedback(self, storage):
+        """Test build_history_context with both liked and disliked entries."""
+        entries = [
+            HistoryEntry(
+                url="https://liked.com",
+                reason="great content",
+                type="convergent",
+                feedback="liked",
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+                extracted=False,
+            ),
+            HistoryEntry(
+                url="https://disliked.com",
+                reason="not for me",
+                type="divergent",
+                feedback="disliked",
+                timestamp="2024-01-15T10:31:00Z",
+                session_id="session123",
+                extracted=False,
+            ),
+        ]
+        storage.append_history(entries)
+
+        context = storage.build_history_context()
+        assert "https://liked.com" in context
+        assert "https://disliked.com" in context
+        assert "Items you've liked" in context
+        assert "Items you didn't like" in context
+
+
 class TestMigration:
     """Tests for file migration logic."""
 
@@ -420,3 +631,381 @@ class TestMigration:
         migrations = storage.migrate_if_needed()
 
         assert migrations == []
+
+
+class TestProfileManager:
+    """Tests for ProfileManager class."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def pm(self, temp_dir):
+        """Create a ProfileManager with temp directory."""
+        return ProfileManager(root_dir=temp_dir)
+
+    def test_list_profiles_empty(self, pm):
+        """Test listing profiles when none exist."""
+        profiles = pm.list_profiles()
+        # Should return default in registry
+        assert "default" in profiles
+
+    def test_create_profile(self, pm):
+        """Test creating a new profile."""
+        path = pm.create_profile("test-profile")
+        assert path.exists()
+        assert (path / "loaders").exists()
+        assert "test-profile" in pm.list_profiles()
+
+    def test_create_profile_already_exists(self, pm):
+        """Test creating a profile that already exists fails."""
+        pm.create_profile("test-profile")
+        with pytest.raises(ValueError, match="already exists"):
+            pm.create_profile("test-profile")
+
+    def test_create_profile_from_existing(self, pm):
+        """Test copying from an existing profile."""
+        # Create source profile with content
+        source_path = pm.create_profile("source")
+        (source_path / "taste.md").write_text("My taste")
+        (source_path / "settings.yaml").write_text("version: 2")
+
+        # Create new profile from source
+        new_path = pm.create_profile("copy", from_profile="source")
+
+        assert (new_path / "taste.md").read_text() == "My taste"
+        assert (new_path / "settings.yaml").exists()
+
+    def test_create_profile_from_nonexistent(self, pm):
+        """Test copying from nonexistent profile fails."""
+        with pytest.raises(ValueError, match="does not exist"):
+            pm.create_profile("new", from_profile="nonexistent")
+
+    def test_get_active_profile_default(self, pm):
+        """Test getting active profile returns default."""
+        assert pm.get_active_profile() == "default"
+
+    def test_set_active_profile(self, pm):
+        """Test switching active profile."""
+        pm.create_profile("work")
+        pm.set_active_profile("work")
+        assert pm.get_active_profile() == "work"
+
+    def test_set_active_profile_nonexistent(self, pm):
+        """Test switching to nonexistent profile fails."""
+        with pytest.raises(ValueError, match="does not exist"):
+            pm.set_active_profile("nonexistent")
+
+    def test_delete_profile(self, pm):
+        """Test deleting a profile."""
+        pm.create_profile("to-delete")
+        assert pm.profile_exists("to-delete")
+
+        pm.delete_profile("to-delete")
+        assert not pm.profile_exists("to-delete")
+        assert "to-delete" not in pm.list_profiles()
+
+    def test_delete_profile_nonexistent(self, pm):
+        """Test deleting nonexistent profile fails."""
+        with pytest.raises(ValueError, match="does not exist"):
+            pm.delete_profile("nonexistent")
+
+    def test_delete_active_profile_fails(self, pm):
+        """Test that deleting the active profile fails."""
+        pm.create_profile("active-one")
+        pm.set_active_profile("active-one")
+
+        with pytest.raises(ValueError, match="Cannot delete active"):
+            pm.delete_profile("active-one")
+
+    def test_rename_profile(self, pm):
+        """Test renaming a profile."""
+        pm.create_profile("old-name")
+        (pm.get_profile_path("old-name") / "taste.md").write_text("Content")
+
+        pm.rename_profile("old-name", "new-name")
+
+        assert not pm.profile_exists("old-name")
+        assert pm.profile_exists("new-name")
+        assert (pm.get_profile_path("new-name") / "taste.md").read_text() == "Content"
+
+    def test_rename_active_profile_updates_registry(self, pm):
+        """Test that renaming active profile updates registry."""
+        pm.create_profile("current")
+        pm.set_active_profile("current")
+
+        pm.rename_profile("current", "renamed")
+
+        assert pm.get_active_profile() == "renamed"
+
+    def test_export_profile(self, pm, temp_dir):
+        """Test exporting a profile to tar.gz."""
+        # Create profile with content
+        path = pm.create_profile("export-me")
+        (path / "taste.md").write_text("My taste")
+        (path / "learnings.md").write_text("My learnings")
+
+        # Export
+        output = temp_dir / "export.tar.gz"
+        result = pm.export_profile("export-me", output)
+
+        assert result == output
+        assert output.exists()
+
+    def test_import_profile(self, pm, temp_dir):
+        """Test importing a profile from tar.gz."""
+        # Create and export a profile
+        path = pm.create_profile("to-export")
+        (path / "taste.md").write_text("Imported taste")
+
+        archive = temp_dir / "archive.tar.gz"
+        pm.export_profile("to-export", archive)
+
+        # Delete original
+        pm.delete_profile("to-export")
+        assert not pm.profile_exists("to-export")
+
+        # Import
+        imported_name = pm.import_profile(archive)
+
+        assert imported_name == "to-export"
+        assert pm.profile_exists("to-export")
+        assert (pm.get_profile_path("to-export") / "taste.md").read_text() == "Imported taste"
+
+    def test_import_profile_with_name_override(self, pm, temp_dir):
+        """Test importing with a different name."""
+        path = pm.create_profile("original")
+        (path / "taste.md").write_text("Content")
+
+        archive = temp_dir / "archive.tar.gz"
+        pm.export_profile("original", archive)
+
+        # Import with different name
+        imported_name = pm.import_profile(archive, name="imported")
+
+        assert imported_name == "imported"
+        assert pm.profile_exists("imported")
+
+    def test_import_profile_already_exists(self, pm, temp_dir):
+        """Test importing fails if profile already exists."""
+        path = pm.create_profile("existing")
+        archive = temp_dir / "archive.tar.gz"
+        pm.export_profile("existing", archive)
+
+        with pytest.raises(ValueError, match="already exists"):
+            pm.import_profile(archive)
+
+    def test_ensure_default_profile(self, pm):
+        """Test ensuring default profile exists."""
+        pm.ensure_default_profile()
+        assert pm.profile_exists("default")
+
+    def test_env_var_override(self, pm, monkeypatch):
+        """Test SERENDIPITY_PROFILE environment variable."""
+        pm.create_profile("env-profile")
+        monkeypatch.setenv("SERENDIPITY_PROFILE", "env-profile")
+
+        assert pm.get_active_profile() == "env-profile"
+
+
+class TestStorageManagerWithProfiles:
+    """Tests for StorageManager with profile support."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_storage_uses_profile_directory(self, temp_dir):
+        """Test that StorageManager uses profile-specific directory."""
+        pm = ProfileManager(root_dir=temp_dir)
+        pm.create_profile("test-profile")
+        pm.set_active_profile("test-profile")
+
+        storage = StorageManager(profile_manager=pm)
+
+        assert storage.base_dir == pm.get_profile_path("test-profile")
+        assert storage.profile_name == "test-profile"
+
+    def test_storage_explicit_profile(self, temp_dir):
+        """Test using explicit profile name."""
+        pm = ProfileManager(root_dir=temp_dir)
+        pm.create_profile("explicit")
+
+        storage = StorageManager(profile="explicit", profile_manager=pm)
+
+        assert storage.base_dir == pm.get_profile_path("explicit")
+
+    def test_storage_explicit_base_dir_overrides(self, temp_dir):
+        """Test that explicit base_dir overrides profile."""
+        custom_dir = temp_dir / "custom"
+        custom_dir.mkdir()
+
+        storage = StorageManager(base_dir=custom_dir)
+
+        assert storage.base_dir == custom_dir
+        assert storage.profile_manager is None
+
+    def test_load_config_with_variable_context(self, temp_dir):
+        """Test that load_config expands template variables."""
+        pm = ProfileManager(root_dir=temp_dir)
+        pm.create_profile("test")
+        pm.set_active_profile("test")
+
+        storage = StorageManager(profile_manager=pm)
+
+        # Write a settings.yaml with template variables
+        settings_content = """
+version: 2
+context_sources:
+  taste:
+    type: loader
+    enabled: true
+    options:
+      path: "{profile_dir}/taste.md"
+"""
+        storage.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        storage.settings_path.write_text(settings_content)
+
+        config = storage.load_config()
+
+        # Check that {profile_dir} was expanded
+        taste_config = config.context_sources.get("taste")
+        assert taste_config is not None
+        expected_path = str(storage.base_dir) + "/taste.md"
+        assert taste_config.raw_config["options"]["path"] == expected_path
+
+
+class TestStyleManagement:
+    """Tests for style.css management."""
+
+    @pytest.fixture
+    def temp_dir(self, tmp_path):
+        """Create a temporary directory for testing."""
+        return tmp_path
+
+    def test_style_path_property(self, temp_dir):
+        """Test that style_path returns correct path."""
+        storage = StorageManager(base_dir=temp_dir)
+        assert storage.style_path == temp_dir / "style.css"
+
+    def test_get_style_path_creates_file(self, temp_dir):
+        """Test that get_style_path creates file from default."""
+        storage = StorageManager(base_dir=temp_dir)
+        default_css = "body { color: red; }"
+
+        path = storage.get_style_path(default_css)
+
+        assert path.exists()
+        assert path.read_text() == default_css
+
+    def test_get_style_path_returns_existing(self, temp_dir):
+        """Test that get_style_path returns existing file without overwriting."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+
+        # Create custom style
+        custom_css = "body { color: blue; }"
+        storage.style_path.write_text(custom_css)
+
+        # get_style_path should not overwrite
+        path = storage.get_style_path("body { color: red; }")
+
+        assert path.read_text() == custom_css
+
+    def test_style_is_customized_false_when_missing(self, temp_dir):
+        """Test style_is_customized returns False when file doesn't exist."""
+        storage = StorageManager(base_dir=temp_dir)
+        default_css = "body { color: red; }"
+
+        assert storage.style_is_customized(default_css) is False
+
+    def test_style_is_customized_false_when_matches_default(self, temp_dir):
+        """Test style_is_customized returns False when content matches default."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+        default_css = "body { color: red; }"
+
+        storage.style_path.write_text(default_css)
+
+        assert storage.style_is_customized(default_css) is False
+
+    def test_style_is_customized_true_when_different(self, temp_dir):
+        """Test style_is_customized returns True when content differs."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.ensure_dirs()
+        default_css = "body { color: red; }"
+
+        storage.style_path.write_text("body { color: blue; }")
+
+        assert storage.style_is_customized(default_css) is True
+
+
+class TestPromptManagement:
+    """Tests for prompt file management."""
+
+    @pytest.fixture
+    def temp_dir(self, tmp_path):
+        """Create a temporary directory for testing."""
+        return tmp_path
+
+    def test_prompts_dir_property(self, temp_dir):
+        """Test that prompts_dir returns correct path."""
+        storage = StorageManager(base_dir=temp_dir)
+        assert storage.prompts_dir == temp_dir / "prompts"
+
+    def test_get_prompt_path_creates_file(self, temp_dir):
+        """Test that get_prompt_path creates file from default."""
+        storage = StorageManager(base_dir=temp_dir)
+        default_prompt = "You are a helpful assistant."
+
+        path = storage.get_prompt_path("test.txt", default_prompt)
+
+        assert path.exists()
+        assert path.read_text() == default_prompt
+        assert path.parent == storage.prompts_dir
+
+    def test_get_prompt_path_returns_existing(self, temp_dir):
+        """Test that get_prompt_path returns existing file without overwriting."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.prompts_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create custom prompt
+        custom_prompt = "Custom instructions"
+        (storage.prompts_dir / "test.txt").write_text(custom_prompt)
+
+        # get_prompt_path should not overwrite
+        path = storage.get_prompt_path("test.txt", "Default instructions")
+
+        assert path.read_text() == custom_prompt
+
+    def test_prompt_is_customized_false_when_missing(self, temp_dir):
+        """Test prompt_is_customized returns False when file doesn't exist."""
+        storage = StorageManager(base_dir=temp_dir)
+        default_prompt = "Default instructions"
+
+        assert storage.prompt_is_customized("test.txt", default_prompt) is False
+
+    def test_prompt_is_customized_false_when_matches_default(self, temp_dir):
+        """Test prompt_is_customized returns False when content matches default."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.prompts_dir.mkdir(parents=True, exist_ok=True)
+        default_prompt = "Default instructions"
+
+        (storage.prompts_dir / "test.txt").write_text(default_prompt)
+
+        assert storage.prompt_is_customized("test.txt", default_prompt) is False
+
+    def test_prompt_is_customized_true_when_different(self, temp_dir):
+        """Test prompt_is_customized returns True when content differs."""
+        storage = StorageManager(base_dir=temp_dir)
+        storage.prompts_dir.mkdir(parents=True, exist_ok=True)
+        default_prompt = "Default instructions"
+
+        (storage.prompts_dir / "test.txt").write_text("Custom instructions")
+
+        assert storage.prompt_is_customized("test.txt", default_prompt) is True

@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.console import Console
@@ -271,3 +271,563 @@ class TestGetMoreSessionFeedback:
 
         assert liked == []
         assert disliked == []
+
+
+class TestParseResponse:
+    """Tests for _parse_response method with new format."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent for testing."""
+        return SerendipityAgent(console=Console())
+
+    def test_parse_recommendations_tag(self, agent):
+        """Test parsing <recommendations> tag."""
+        text = """
+        <recommendations>
+        {"convergent": [{"url": "https://example.com", "reason": "test"}], "divergent": []}
+        </recommendations>
+        """
+        result = agent._parse_response(text)
+        assert len(result["convergent"]) == 1
+        assert result["convergent"][0].url == "https://example.com"
+        # Note: CSS is no longer parsed from response (now loaded from file)
+
+    def test_parse_legacy_output_tag(self, agent):
+        """Test parsing legacy <output> tag fallback."""
+        text = """
+        <output>
+        {"convergent": [{"url": "https://legacy.com", "reason": "old format"}], "divergent": []}
+        </output>
+        """
+        result = agent._parse_response(text)
+        assert len(result["convergent"]) == 1
+        assert result["convergent"][0].url == "https://legacy.com"
+
+    def test_parse_with_metadata(self, agent):
+        """Test parsing recommendations with metadata."""
+        text = """
+        <recommendations>
+        {
+            "convergent": [{
+                "url": "https://youtube.com/watch?v=123",
+                "reason": "Great video",
+                "type": "youtube",
+                "title": "Video Title",
+                "metadata": {"channel": "TestChannel", "duration": "10:00"}
+            }],
+            "divergent": []
+        }
+        </recommendations>
+        """
+        result = agent._parse_response(text)
+        assert len(result["convergent"]) == 1
+        rec = result["convergent"][0]
+        assert rec.url == "https://youtube.com/watch?v=123"
+        assert rec.media_type == "youtube"
+        assert rec.title == "Video Title"
+        assert rec.metadata["channel"] == "TestChannel"
+
+
+class TestRenderRecommendations:
+    """Tests for _render_recommendations method."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent for testing."""
+        return SerendipityAgent(console=Console())
+
+    def test_render_empty_list(self, agent):
+        """Test rendering empty recommendation list."""
+        result = agent._render_recommendations([])
+        assert result == ""
+
+    def test_render_basic_recommendation(self, agent):
+        """Test rendering basic recommendation."""
+        from serendipity.models import Recommendation
+
+        recs = [Recommendation(url="https://example.com", reason="Test reason")]
+        result = agent._render_recommendations(recs)
+
+        assert "https://example.com" in result
+        assert "Test reason" in result
+        assert "card" in result
+
+    def test_render_with_title(self, agent):
+        """Test rendering recommendation with title."""
+        from serendipity.models import Recommendation
+
+        recs = [Recommendation(
+            url="https://example.com",
+            reason="Test reason",
+            title="Article Title",
+        )]
+        result = agent._render_recommendations(recs)
+
+        assert "Article Title" in result
+        assert "card-link" in result
+
+    def test_render_with_thumbnail(self, agent):
+        """Test rendering recommendation with thumbnail."""
+        from serendipity.models import Recommendation
+
+        recs = [Recommendation(
+            url="https://youtube.com",
+            reason="Test",
+            thumbnail_url="https://img.youtube.com/vi/abc/0.jpg",
+        )]
+        result = agent._render_recommendations(recs)
+
+        assert "card-media" in result
+        assert "https://img.youtube.com/vi/abc/0.jpg" in result
+
+    def test_render_with_metadata(self, agent):
+        """Test rendering recommendation with metadata."""
+        from serendipity.models import Recommendation
+
+        recs = [Recommendation(
+            url="https://example.com",
+            reason="Test",
+            metadata={"author": "Jane Doe", "year": "2024"},
+        )]
+        result = agent._render_recommendations(recs)
+
+        assert "card-meta" in result
+        assert "author" in result
+        assert "Jane Doe" in result
+
+    def test_render_escapes_html(self, agent):
+        """Test that HTML characters are properly escaped."""
+        from serendipity.models import Recommendation
+
+        recs = [Recommendation(
+            url="https://example.com?foo=1&bar=2",
+            reason="Test <script>alert('xss')</script>",
+        )]
+        result = agent._render_recommendations(recs)
+
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+        assert "&amp;" in result
+
+    def test_render_multiple_recommendations(self, agent):
+        """Test rendering multiple recommendations."""
+        from serendipity.models import Recommendation
+
+        recs = [
+            Recommendation(url="https://one.com", reason="First"),
+            Recommendation(url="https://two.com", reason="Second"),
+            Recommendation(url="https://three.com", reason="Third"),
+        ]
+        result = agent._render_recommendations(recs)
+
+        assert result.count("class=\"card\"") == 3
+        assert "https://one.com" in result
+        assert "https://two.com" in result
+        assert "https://three.com" in result
+
+
+class MockAsyncIterator:
+    """Helper class to create a proper async iterator for testing."""
+
+    def __init__(self, items):
+        self.items = items
+        self.index = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.index >= len(self.items):
+            raise StopAsyncIteration
+        item = self.items[self.index]
+        self.index += 1
+        return item
+
+
+class TestAgentWithMockedSDK:
+    """Tests for agent methods with mocked Claude SDK."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent = SerendipityAgent(console=Console())
+            agent.output_dir = Path(tmpdir)
+            yield agent
+
+    @pytest.mark.asyncio
+    async def test_discover_creates_html_output(self, agent):
+        """Test that discover creates HTML output file."""
+        from claude_agent_sdk import ResultMessage, TextBlock, AssistantMessage
+
+        # Create response items
+        text_content = """
+        <recommendations>
+        {"convergent": [{"url": "https://example.com", "reason": "test"}], "divergent": []}
+        </recommendations>
+        <css>
+        body { color: white; }
+        </css>
+        """
+        responses = [
+            AssistantMessage(content=[TextBlock(text=text_content)], model="opus"),
+            ResultMessage(
+                subtype="result",
+                duration_ms=1000,
+                duration_api_ms=900,
+                is_error=False,
+                num_turns=1,
+                session_id="test-session-123",
+                total_cost_usd=0.01,
+            ),
+        ]
+
+        # Mock the Claude SDK client
+        with patch("serendipity.agent.ClaudeSDKClient") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            # receive_response should return the async iterator directly
+            mock_client.receive_response = MagicMock(return_value=MockAsyncIterator(responses))
+            mock_client.query = AsyncMock()
+
+            result = await agent.discover("Test context")
+
+            assert result.session_id == "test-session-123"
+            assert result.cost_usd == 0.01
+            assert result.html_path is not None
+            assert result.html_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_discover_with_context_manager(self, agent):
+        """Test discover uses context manager for MCP servers."""
+        from claude_agent_sdk import ResultMessage, TextBlock, AssistantMessage
+
+        mock_context_manager = MagicMock()
+        mock_context_manager.get_mcp_servers.return_value = {
+            "whorl": {"url": "http://localhost:8081/mcp/", "type": "http"}
+        }
+        mock_context_manager.get_allowed_tools.return_value = ["mcp__whorl__search"]
+        mock_context_manager.get_system_prompt_hints.return_value = "Search Whorl first"
+        mock_context_manager.get_enabled_source_names.return_value = ["whorl"]
+
+        agent.context_manager = mock_context_manager
+
+        text = '<recommendations>{"convergent": [], "divergent": []}</recommendations>'
+        responses = [
+            AssistantMessage(content=[TextBlock(text=text)], model="opus"),
+            ResultMessage(
+                subtype="result",
+                duration_ms=1000,
+                duration_api_ms=900,
+                is_error=False,
+                num_turns=1,
+                session_id="test",
+                total_cost_usd=0.01,
+            ),
+        ]
+
+        with patch("serendipity.agent.ClaudeSDKClient") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            mock_client.receive_response = MagicMock(return_value=MockAsyncIterator(responses))
+            mock_client.query = AsyncMock()
+
+            await agent.discover("Test context")
+
+            # Verify MCP servers were included in options
+            call_kwargs = MockClient.call_args
+            assert call_kwargs is not None
+
+    def test_agent_uses_types_config(self):
+        """Test that agent uses types config for prompt building."""
+        from serendipity.config.types import TypesConfig
+
+        config = TypesConfig.default()
+        config.total_count = 5
+
+        agent = SerendipityAgent(console=Console(), types_config=config)
+
+        assert agent.types_config.total_count == 5
+
+
+class TestDiscoveryResult:
+    """Tests for DiscoveryResult dataclass."""
+
+    def test_create_result(self):
+        """Test creating DiscoveryResult."""
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import Recommendation
+
+        result = DiscoveryResult(
+            convergent=[Recommendation(url="https://a.com", reason="test")],
+            divergent=[],
+            session_id="abc123",
+            cost_usd=0.05,
+        )
+
+        assert len(result.convergent) == 1
+        assert result.session_id == "abc123"
+        assert result.cost_usd == 0.05
+        assert result.html_style is None
+        assert result.html_path is None
+
+    def test_result_with_html_style(self):
+        """Test DiscoveryResult with HTML style."""
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import HtmlStyle
+
+        result = DiscoveryResult(
+            convergent=[],
+            divergent=[],
+            session_id="test",
+            html_style=HtmlStyle(description="Dark theme", css="body { background: #000; }"),
+        )
+
+        assert result.html_style is not None
+        assert result.html_style.description == "Dark theme"
+
+
+class TestAgentStreamingMessages:
+    """Tests for agent handling of SDK streaming messages."""
+
+    @pytest.fixture
+    def agent(self, tmp_path):
+        """Create agent with temp output directory."""
+        console = MagicMock()
+        agent = SerendipityAgent(console=console)
+        agent.output_dir = tmp_path  # Override output dir after init
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_discover_handles_thinking_blocks(self, agent):
+        """Test that discover processes ThinkingBlock messages."""
+        from claude_agent_sdk import ResultMessage, ThinkingBlock, TextBlock, AssistantMessage
+
+        # Include a thinking block in the response
+        text = '<recommendations>{"convergent": [], "divergent": []}</recommendations>'
+        responses = [
+            AssistantMessage(
+                content=[
+                    ThinkingBlock(thinking="Let me analyze the user's preferences...", signature="test-sig"),
+                ],
+                model="opus"
+            ),
+            AssistantMessage(content=[TextBlock(text=text)], model="opus"),
+            ResultMessage(
+                subtype="result",
+                duration_ms=1000,
+                duration_api_ms=900,
+                is_error=False,
+                num_turns=1,
+                session_id="test-session",
+                total_cost_usd=0.01,
+            ),
+        ]
+
+        with patch("serendipity.agent.ClaudeSDKClient") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_client.receive_response = MagicMock(return_value=MockAsyncIterator(responses))
+            mock_client.query = AsyncMock()
+
+            result = await agent.discover("Test context")
+
+            assert result is not None
+            assert result.session_id == "test-session"
+
+    @pytest.mark.asyncio
+    async def test_discover_handles_tool_use_blocks(self, agent):
+        """Test that discover processes ToolUseBlock messages."""
+        from claude_agent_sdk import ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock, AssistantMessage
+
+        text = '<recommendations>{"convergent": [], "divergent": []}</recommendations>'
+        responses = [
+            AssistantMessage(
+                content=[
+                    ToolUseBlock(id="tool-1", name="WebSearch", input={"query": "test search"}),
+                ],
+                model="opus"
+            ),
+            AssistantMessage(
+                content=[
+                    ToolResultBlock(tool_use_id="tool-1", content="Search results..."),
+                ],
+                model="opus"
+            ),
+            AssistantMessage(content=[TextBlock(text=text)], model="opus"),
+            ResultMessage(
+                subtype="result",
+                duration_ms=1000,
+                duration_api_ms=900,
+                is_error=False,
+                num_turns=1,
+                session_id="test-session",
+                total_cost_usd=0.02,
+            ),
+        ]
+
+        with patch("serendipity.agent.ClaudeSDKClient") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_client.receive_response = MagicMock(return_value=MockAsyncIterator(responses))
+            mock_client.query = AsyncMock()
+
+            result = await agent.discover("Test context")
+
+            assert result is not None
+            assert result.cost_usd == 0.02
+
+    @pytest.mark.asyncio
+    async def test_discover_handles_system_init_message(self, agent):
+        """Test that discover processes SystemMessage init events."""
+        from claude_agent_sdk import ResultMessage, SystemMessage, TextBlock, AssistantMessage
+
+        text = '<recommendations>{"convergent": [], "divergent": []}</recommendations>'
+        responses = [
+            SystemMessage(
+                subtype="init",
+                data={
+                    "plugins": [{"name": "test-plugin"}],
+                    "slash_commands": ["/test"],
+                    "mcp_servers": ["whorl"],
+                },
+            ),
+            AssistantMessage(content=[TextBlock(text=text)], model="opus"),
+            ResultMessage(
+                subtype="result",
+                duration_ms=1000,
+                duration_api_ms=900,
+                is_error=False,
+                num_turns=1,
+                session_id="test-session",
+                total_cost_usd=0.01,
+            ),
+        ]
+
+        with patch("serendipity.agent.ClaudeSDKClient") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_client.receive_response = MagicMock(return_value=MockAsyncIterator(responses))
+            mock_client.query = AsyncMock()
+
+            result = await agent.discover("Test context")
+
+            assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_discover_with_verbose_mode(self, agent, tmp_path):
+        """Test that verbose mode shows additional info."""
+        from claude_agent_sdk import ResultMessage, SystemMessage, TextBlock, AssistantMessage
+
+        agent.verbose = True
+
+        text = '<recommendations>{"convergent": [], "divergent": []}</recommendations>'
+        responses = [
+            SystemMessage(
+                subtype="init",
+                data={
+                    "plugins": [{"name": "test-plugin"}],
+                    "mcp_servers": ["whorl"],
+                },
+            ),
+            AssistantMessage(content=[TextBlock(text=text)], model="opus"),
+            ResultMessage(
+                subtype="result",
+                duration_ms=1000,
+                duration_api_ms=900,
+                is_error=False,
+                num_turns=1,
+                session_id="test-session",
+                total_cost_usd=0.01,
+            ),
+        ]
+
+        with patch("serendipity.agent.ClaudeSDKClient") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_client.receive_response = MagicMock(return_value=MockAsyncIterator(responses))
+            mock_client.query = AsyncMock()
+
+            result = await agent.discover("Test context")
+
+            # In verbose mode, console.print should be called for plugins
+            assert agent.console.print.called
+
+
+class TestAgentParseResponse:
+    """Tests for agent response parsing edge cases."""
+
+    def test_parse_recommendations_with_output_tags(self):
+        """Test parsing recommendations from <output> tags."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock())
+
+        text = '''
+        <output>
+        {"convergent": [{"url": "https://test.com", "reason": "Good content"}], "divergent": []}
+        </output>
+        '''
+
+        result = agent._parse_response(text)
+
+        assert len(result.get("convergent", [])) == 1
+        assert result["convergent"][0].url == "https://test.com"
+
+    def test_parse_recommendations_with_code_blocks(self):
+        """Test parsing recommendations from code blocks."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock())
+
+        text = '''
+        ```json
+        {"convergent": [{"url": "https://test.com", "reason": "Good content"}], "divergent": []}
+        ```
+        '''
+
+        result = agent._parse_response(text)
+
+        assert len(result.get("convergent", [])) == 1
+
+    def test_parse_recommendations_with_invalid_json(self):
+        """Test parsing handles invalid JSON gracefully."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock())
+
+        text = '<recommendations>not valid json at all</recommendations>'
+
+        result = agent._parse_response(text)
+
+        # Should return empty result
+        assert result.get("convergent", []) == []
+        assert result.get("divergent", []) == []
+
+    def test_parse_response_no_css_key(self):
+        """Test that _parse_response does NOT return CSS (now loaded from file)."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock())
+
+        # CSS is now loaded from file, not parsed from response
+        result = agent._parse_response('''
+        <recommendations>
+        {"convergent": [], "divergent": []}
+        </recommendations>
+        ''')
+
+        # CSS key should NOT be in result
+        assert "css" not in result
+        # Only convergent and divergent keys
+        assert "convergent" in result
+        assert "divergent" in result

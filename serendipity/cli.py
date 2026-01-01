@@ -18,12 +18,18 @@ from rich.panel import Panel
 from rich.table import Table
 
 from serendipity.agent import Recommendation, SerendipityAgent
-from serendipity.config.types import TypesConfig
+from serendipity.config.types import TypesConfig, context_from_storage
 from serendipity.context_sources import ContextSourceManager
 from serendipity.prompts.builder import PromptBuilder
-from serendipity.resources import get_base_template
+from serendipity.resources import (
+    get_base_template,
+    get_default_style,
+    get_discovery_prompt,
+    get_frontend_design,
+    get_system_prompt,
+)
 
-from serendipity.storage import HistoryEntry, StorageManager
+from serendipity.storage import HistoryEntry, ProfileManager, StorageManager
 
 app = typer.Typer(
     name="serendipity",
@@ -43,6 +49,15 @@ profile_app = typer.Typer(
     invoke_without_command=True,
 )
 app.add_typer(profile_app, name="profile")
+
+# Settings subcommand group
+settings_app = typer.Typer(
+    name="settings",
+    help="Manage all serendipity settings (approaches, media types, context sources)",
+    rich_markup_mode="rich",
+    invoke_without_command=True,
+)
+app.add_typer(settings_app, name="settings")
 
 console = Console()
 
@@ -116,7 +131,7 @@ def profile_callback(
 
     # Handle --enable-source / --disable-source
     if enable_source or disable_source:
-        config = TypesConfig.from_yaml(storage.settings_path)
+        config = storage.load_config()
         source_name = enable_source or disable_source
 
         if source_name not in config.context_sources:
@@ -171,7 +186,7 @@ def profile_callback(
         console.print(f"[yellow]{msg}[/yellow]")
 
     # Load settings to get context sources
-    settings = TypesConfig.from_yaml(storage.settings_path)
+    settings = storage.load_config()
 
     console.print("\n[bold]Your Profile[/bold]")
     console.print("[dim]What Claude knows about you (enabled context sources)[/dim]\n")
@@ -273,7 +288,7 @@ def _profile_interactive_wizard(storage: StorageManager) -> None:
     console.print("\n[bold]Step 2: Context Sources[/bold]")
     console.print("[dim]Choose which sources Claude uses to understand you[/dim]\n")
 
-    config = TypesConfig.from_yaml(storage.settings_path)
+    config = storage.load_config()
 
     source_choices = []
     for name, source in config.context_sources.items():
@@ -315,7 +330,7 @@ def _settings_interactive_wizard(storage: StorageManager) -> None:
         border_style="blue",
     ))
 
-    config = TypesConfig.from_yaml(storage.settings_path)
+    config = storage.load_config()
     yaml_content = storage.settings_path.read_text()
     data = yaml.safe_load(yaml_content) or {}
 
@@ -440,6 +455,267 @@ def success(text: str) -> str:
 
 def warning(text: str) -> str:
     return f"[yellow]{text}[/yellow]"
+
+
+# =============================================================================
+# Helper functions for hierarchical access
+# =============================================================================
+
+
+def is_source_editable(source_config) -> tuple[bool, Optional[Path]]:
+    """Check if a source has an editable file path.
+
+    Returns:
+        (is_editable, file_path) - file_path is None if not editable
+    """
+    from serendipity.config.types import ContextSourceConfig
+
+    # MCP sources are never editable from profile
+    if source_config.type != "loader":
+        return False, None
+
+    raw = source_config.raw_config
+    loader = raw.get("loader", "")
+
+    # Only file_loader sources with a path are editable
+    if loader != "serendipity.context_sources.builtins.file_loader":
+        return False, None
+
+    path_str = raw.get("options", {}).get("path")
+    if not path_str:
+        return False, None
+
+    return True, Path(path_str).expanduser()
+
+
+def get_settings_value(settings: dict, path: str) -> tuple:
+    """Get a value from settings by dotted path.
+
+    Args:
+        settings: Full settings dict
+        path: Dotted path like "approaches.convergent" or "model"
+
+    Returns:
+        (value, found) - value is None if not found
+    """
+    if not path:
+        return settings, True
+
+    parts = path.split(".")
+    current = settings
+
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None, False
+
+    return current, True
+
+
+def set_settings_value(settings: dict, path: str, value) -> bool:
+    """Set a value in settings by dotted path.
+
+    Returns:
+        True if successful, False if path doesn't exist
+    """
+    parts = path.split(".")
+    current = settings
+
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return False
+
+    if parts[-1] in current:
+        current[parts[-1]] = value
+        return True
+    return False
+
+
+# =============================================================================
+# Source handlers for profile get/edit
+# =============================================================================
+
+
+def _handle_profile_history(
+    storage: StorageManager,
+    liked: bool = False,
+    disliked: bool = False,
+    limit: int = 20,
+    clear: bool = False,
+) -> None:
+    """Handle history source operations."""
+    if clear:
+        if typer.confirm("Are you sure you want to clear all history?"):
+            storage.clear_history()
+            console.print(success("History cleared"))
+        return
+
+    # Get entries based on filter
+    if liked:
+        entries = storage.get_liked_entries()[-limit:]
+        title = "Liked Recommendations"
+    elif disliked:
+        entries = storage.get_disliked_entries()[-limit:]
+        title = "Disliked Recommendations"
+    else:
+        entries = storage.load_recent_history(limit)
+        title = "Recent Recommendations"
+
+    if not entries:
+        console.print("[dim]No history found.[/dim]")
+        return
+
+    table = Table(title=title, show_lines=True)
+    table.add_column("Type", style="cyan", width=10)
+    table.add_column("URL", style="blue", no_wrap=False)
+    table.add_column("Feedback", style="green", width=10)
+
+    for entry in entries:
+        feedback_str = entry.feedback or "[dim]-[/dim]"
+        if entry.feedback == "liked":
+            feedback_str = "[green]👍[/green]"
+        elif entry.feedback == "disliked":
+            feedback_str = "[red]👎[/red]"
+        table.add_row(entry.type, entry.url, feedback_str)
+
+    console.print(table)
+    console.print(f"\n[dim]History file: {storage.history_path}[/dim]")
+
+
+def _handle_profile_learnings(
+    storage: StorageManager,
+    interactive: bool = False,
+    clear: bool = False,
+    edit: bool = False,
+) -> None:
+    """Handle learnings source operations."""
+    if clear:
+        if not typer.confirm("Clear all learnings? This cannot be undone."):
+            console.print(warning("Cancelled"))
+            return
+        storage.clear_learnings()
+        console.print(success("Learnings cleared"))
+        return
+
+    if edit:
+        learnings_path = storage.learnings_path
+        if not learnings_path.exists():
+            learnings_path.write_text("# My Discovery Learnings\n\n## Likes\n\n## Dislikes\n")
+        editor = os.environ.get("EDITOR", "vim")
+        subprocess.run([editor, str(learnings_path)])
+        console.print(success(f"Learnings saved to {learnings_path}"))
+        return
+
+    if interactive:
+        _learnings_interactive_wizard(storage)
+        return
+
+    # Default: show learnings
+    learnings_content = storage.load_learnings()
+    if learnings_content.strip():
+        console.print(Panel(learnings_content, title="Discovery Learnings", border_style="blue"))
+    else:
+        console.print("[dim]No learnings yet. Run 'serendipity profile get learnings -i' to extract from history.[/dim]")
+    console.print(f"\n[dim]Learnings file: {storage.learnings_path}[/dim]")
+
+
+def _handle_profile_file_source(
+    storage: StorageManager,
+    source_config,
+    file_path: Path,
+    clear: bool = False,
+    edit: bool = False,
+) -> None:
+    """Handle file-based loader sources (taste, notes, etc.)."""
+    if clear:
+        if not typer.confirm(f"Clear {source_config.name}? This cannot be undone."):
+            console.print(warning("Cancelled"))
+            return
+        if file_path.exists():
+            file_path.unlink()
+        console.print(success(f"{source_config.name} cleared"))
+        return
+
+    if edit:
+        if not file_path.exists():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(f"# {source_config.name.title()}\n\n")
+        editor = os.environ.get("EDITOR", "vim")
+        subprocess.run([editor, str(file_path)])
+        console.print(success(f"{source_config.name} saved to {file_path}"))
+        return
+
+    # Default: show content
+    if file_path.exists():
+        content = file_path.read_text()
+        if content.strip():
+            console.print(Panel(content, title=source_config.name.title(), border_style="blue"))
+        else:
+            console.print(f"[dim]{source_config.name} is empty.[/dim]")
+    else:
+        console.print(f"[dim]{source_config.name} file not found: {file_path}[/dim]")
+    console.print(f"\n[dim]File: {file_path}[/dim]")
+
+
+def _handle_profile_mcp_source(source_config) -> None:
+    """Handle MCP source display (read-only config/status)."""
+    import yaml
+
+    console.print(f"\n[bold]{source_config.name}[/bold] [dim](MCP source)[/dim]")
+    console.print(f"[dim]Type: {source_config.type}[/dim]")
+
+    if source_config.description:
+        console.print(f"[dim]Description: {source_config.description}[/dim]")
+
+    # Show server configuration
+    raw = source_config.raw_config
+    server = raw.get("server", {})
+    if server:
+        console.print(f"\n[cyan]Server:[/cyan]")
+        console.print(f"  URL: {server.get('url', 'not configured')}")
+        console.print(f"  Type: {server.get('type', 'http')}")
+
+    # Show port config
+    port_config = raw.get("port", {})
+    if port_config:
+        console.print(f"  Port: {port_config.get('default', 'auto')}")
+
+    # Show allowed tools
+    tools = raw.get("tools", {})
+    allowed = tools.get("allowed", [])
+    if allowed:
+        console.print(f"\n[cyan]Allowed tools:[/cyan]")
+        for tool in allowed[:5]:
+            console.print(f"  • {tool}")
+        if len(allowed) > 5:
+            console.print(f"  ... and {len(allowed) - 5} more")
+
+    console.print(f"\n[dim]Status: {'enabled' if source_config.enabled else 'disabled'}[/dim]")
+    console.print("[dim]MCP sources are read-only from profile.[/dim]")
+
+
+def _handle_profile_generic_loader(storage: StorageManager, source_config) -> None:
+    """Handle generic loader sources (like style_guidance)."""
+    console.print(f"\n[bold]{source_config.name}[/bold] [dim](loader)[/dim]")
+    console.print(f"[dim]Type: {source_config.type}[/dim]")
+
+    if source_config.description:
+        console.print(f"[dim]Description: {source_config.description}[/dim]")
+
+    raw = source_config.raw_config
+    loader = raw.get("loader", "unknown")
+    console.print(f"\n[cyan]Loader:[/cyan] {loader}")
+
+    # Try to get content preview
+    if source_config.name == "style_guidance":
+        console.print("\n[dim]Content: Dynamic HTML styling guidance based on taste profile[/dim]")
+    else:
+        console.print(f"\n[dim]This source has no editable file.[/dim]")
+
+    console.print(f"[dim]Status: {'enabled' if source_config.enabled else 'disabled'}[/dim]")
 
 
 def _read_from_clipboard() -> str:
@@ -771,6 +1047,17 @@ def discover_cmd(
         "-t",
         help="Enable extended thinking with specified token budget (e.g., 10000)",
     ),
+    count: Optional[int] = typer.Option(
+        None,
+        "--count",
+        "-n",
+        help="Number of recommendations to generate (default: 10)",
+    ),
+    port: Optional[int] = typer.Option(
+        None,
+        "--port",
+        help="Port for feedback server (default: 9876)",
+    ),
 ) -> None:
     """Discover convergent and divergent content recommendations.
 
@@ -794,13 +1081,14 @@ def discover_cmd(
         console.print(f"[yellow]{msg}[/yellow]")
 
     # Load settings config
-    settings = TypesConfig.from_yaml(storage.settings_path)
+    settings = storage.load_config()
 
-    # Use settings defaults if not specified
+    # Use settings defaults if not specified (CLI flags override settings)
     if model is None:
         model = settings.model
-    # Use CLI thinking value (extended thinking is CLI-only now)
-    max_thinking_tokens = thinking
+    max_thinking_tokens = thinking if thinking is not None else settings.thinking_tokens
+    total_count = count if count is not None else settings.total_count
+    server_port = port if port is not None else settings.feedback_server_port
 
     # Get context from input sources
     context = _get_context(file_path, paste, interactive)
@@ -882,7 +1170,7 @@ def discover_cmd(
         console.print(Panel(
             f"Context length: {len(context)} chars\n"
             f"Model: {model}\n"
-            f"Total count: {settings.total_count}\n"
+            f"Total count: {total_count}\n"
             f"Context sources: {', '.join(enabled_sources) if enabled_sources else 'none'}\n"
             f"MCP servers: {', '.join(ctx_manager.get_mcp_servers().keys()) or 'none'}\n"
             f"Thinking: {max_thinking_tokens if max_thinking_tokens else 'disabled'}",
@@ -899,10 +1187,11 @@ def discover_cmd(
         model=model,
         verbose=verbose,
         context_manager=ctx_manager,
-        server_port=settings.feedback_server_port,
+        server_port=server_port,
         template_path=template_path,
         max_thinking_tokens=max_thinking_tokens,
         types_config=settings,
+        storage=storage,
     )
 
     console.print("[bold green]Discovering...[/bold green]")
@@ -913,6 +1202,12 @@ def discover_cmd(
         style_guidance=style_guidance,
     )
     console.print()
+
+    # Show session info (useful for debugging and resuming)
+    if result.session_id:
+        console.print(f"[dim]Session: {result.session_id}[/dim]")
+        console.print(f"[dim]Resume: claude -r {result.session_id}[/dim]")
+        console.print()
 
     # Save to history (unless history source is disabled)
     history_enabled = "history" not in sources_to_disable
@@ -931,7 +1226,7 @@ def discover_cmd(
         _, actual_port = _start_feedback_server(
             storage,
             agent,
-            settings.feedback_server_port,
+            server_port,
             static_dir=agent.output_dir,
             user_input=context,
             session_id=result.session_id,
@@ -945,8 +1240,8 @@ def discover_cmd(
 
         console.print(success(f"Opened in browser: {url}"))
         console.print(f"[dim]HTML file: {result.html_path}[/dim]")
-        if actual_port != settings.feedback_server_port:
-            console.print(f"[yellow]Port {settings.feedback_server_port} was in use, using port {actual_port}[/yellow]")
+        if actual_port != server_port:
+            console.print(f"[yellow]Port {server_port} was in use, using port {actual_port}[/yellow]")
         console.print(f"[dim]Feedback server running on localhost:{actual_port}[/dim]")
         console.print("[dim]Press Ctrl+C to stop the server when done.[/dim]")
 
@@ -972,18 +1267,15 @@ def discover_cmd(
         console.print(error(f"Unknown output format: {output_format}"))
         raise typer.Exit(code=1)
 
-    # Show cost and session info (for non-HTML output)
+    # Show cost (for non-HTML output)
     if output_format != "html":
         if result.cost_usd:
             console.print(f"[dim]Cost: ${result.cost_usd:.4f}[/dim]")
 
-        resume_cmd = agent.get_resume_command()
-        if resume_cmd:
-            console.print(f"[dim]Resume: {resume_cmd}[/dim]")
 
-
-@app.command()
-def settings(
+@settings_app.callback()
+def settings_callback(
+    ctx: typer.Context,
     show: bool = typer.Option(
         True,
         "--show",
@@ -1036,7 +1328,11 @@ def settings(
     $ serendipity settings --edit                 # Edit in $EDITOR
     $ serendipity settings --reset                # Restore defaults
     $ serendipity settings --enable-source whorl  # Enable context source
+    $ serendipity settings add media -i           # Add new media type
     """
+    # If a subcommand is invoked, skip the callback logic
+    if ctx.invoked_subcommand is not None:
+        return
     import yaml
 
     console = Console()
@@ -1068,7 +1364,7 @@ def settings(
 
     if preview:
         # Show the prompt that would be generated
-        config = TypesConfig.from_yaml(settings_path)
+        config = storage.load_config()
         builder = PromptBuilder(config)
         console.print(Panel(
             builder.build_type_guidance(),
@@ -1079,7 +1375,7 @@ def settings(
 
     # Handle enable/disable source
     if enable_source or disable_source:
-        config = TypesConfig.from_yaml(settings_path)
+        config = storage.load_config()
 
         if not settings_path.exists():
             TypesConfig.write_defaults(settings_path)
@@ -1109,13 +1405,15 @@ def settings(
         return
 
     # Default: show settings
-    config = TypesConfig.from_yaml(settings_path)
+    config = storage.load_config()
 
     # Show top-level settings
     console.print("\n[bold]Settings[/bold]")
     console.print(f"  model: [cyan]{config.model}[/cyan]")
     console.print(f"  total_count: [cyan]{config.total_count}[/cyan]")
     console.print(f"  feedback_server_port: [cyan]{config.feedback_server_port}[/cyan]")
+    thinking_display = f"[cyan]{config.thinking_tokens}[/cyan]" if config.thinking_tokens else "[dim]disabled[/dim]"
+    console.print(f"  thinking_tokens: {thinking_display}")
 
     # Show approaches
     console.print("\n[bold]Approaches[/bold] (how to find):")
@@ -1141,230 +1439,772 @@ def settings(
             desc = f" - {source.description}" if source.description else ""
             console.print(f"  [yellow]{name}[/yellow]: {status} ({source_type}){desc}")
 
+    # Show prompts status
+    console.print("\n[bold]Prompts[/bold] (agent instructions):")
+    prompt_files = {
+        "discovery": ("discovery.txt", get_discovery_prompt),
+        "frontend_design": ("frontend_design.txt", get_frontend_design),
+        "system": ("system.txt", get_system_prompt),
+    }
+    for name, (filename, default_getter) in prompt_files.items():
+        prompt_path = storage.prompts_dir / filename
+        if prompt_path.exists():
+            is_custom = prompt_path.read_text() != default_getter()
+            status = "[yellow]custom[/yellow]" if is_custom else "[dim]default[/dim]"
+        else:
+            status = "[dim]default[/dim]"
+        console.print(f"  [cyan]{name}[/cyan]: {status}")
+
+    # Show stylesheet status
+    default_css = get_default_style()
+    if storage.style_path.exists():
+        is_custom = storage.style_path.read_text() != default_css
+        style_status = "[yellow]custom[/yellow]" if is_custom else "[dim]default[/dim]"
+    else:
+        style_status = "[dim]default[/dim]"
+    console.print(f"\n[bold]Stylesheet[/bold]: {style_status}")
+
     if settings_path.exists():
         console.print(f"\n[dim]Config: {settings_path}[/dim]")
+        console.print(f"[dim]Prompts: {storage.prompts_dir}[/dim]")
+        console.print(f"[dim]Style: {storage.style_path}[/dim]")
     else:
         console.print(f"\n[dim]Using defaults. Run 'serendipity settings --edit' to customize.[/dim]")
 
 
-@profile_app.command()
-def taste(
-    show: bool = typer.Option(
-        False,
-        "--show",
-        help="Show current taste profile",
-    ),
-    edit: bool = typer.Option(
-        False,
-        "--edit",
-        help="Open taste.md in $EDITOR",
-    ),
-    clear: bool = typer.Option(
-        False,
-        "--clear",
-        help="Clear taste profile",
-    ),
-) -> None:
-    """Manage your taste profile.
+# =============================================================================
+# New hierarchical settings get/edit commands
+# =============================================================================
 
-    Your taste describes your aesthetic sensibilities, interests, and
-    what kind of content you enjoy discovering.
+
+@settings_app.command("get")
+def settings_get_cmd(
+    path: Optional[str] = typer.Argument(None, help="Dotted path (e.g., approaches.convergent, media.youtube)"),
+) -> None:
+    """Show settings value(s) by path.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity profile taste           [dim]# Show taste[/dim]
-      [dim]$[/dim] serendipity profile taste --edit    [dim]# Edit in $EDITOR[/dim]
-      [dim]$[/dim] serendipity profile taste --clear   [dim]# Clear taste[/dim]
+      [dim]$[/dim] serendipity settings get                       [dim]# All settings[/dim]
+      [dim]$[/dim] serendipity settings get model                  [dim]# Just model[/dim]
+      [dim]$[/dim] serendipity settings get approaches             [dim]# Approaches section[/dim]
+      [dim]$[/dim] serendipity settings get approaches.convergent  [dim]# One approach[/dim]
+      [dim]$[/dim] serendipity settings get media.youtube          [dim]# YouTube config[/dim]
+      [dim]$[/dim] serendipity settings get context_sources.whorl  [dim]# Whorl source[/dim]
     """
+    import yaml
+
     storage = StorageManager()
-    storage.ensure_dirs()
+    settings_path = storage.settings_path
 
-    taste_path = storage.taste_path
+    if not settings_path.exists():
+        console.print("[dim]No settings file yet. Using defaults.[/dim]")
+        TypesConfig.from_yaml(settings_path)  # Create default
 
-    if clear:
-        if not typer.confirm("Clear your taste profile? This cannot be undone."):
-            console.print(warning("Cancelled"))
-            return
-        if taste_path.exists():
-            taste_path.unlink()
-        console.print(success("Taste profile cleared"))
+    settings_data = yaml.safe_load(settings_path.read_text()) or {}
+
+    if path is None:
+        # Show all - just dump the full YAML
+        console.print(Panel(
+            yaml.dump(settings_data, default_flow_style=False, sort_keys=False),
+            title="settings.yaml",
+            border_style="blue",
+        ))
+        console.print(f"\n[dim]File: {settings_path}[/dim]")
         return
 
-    if edit:
-        # Create file if it doesn't exist
-        if not taste_path.exists():
-            taste_path.parent.mkdir(parents=True, exist_ok=True)
-            taste_path.write_text(
-                "# My Taste Profile\n\n"
-                "<!-- DELETE EVERYTHING ABOVE AND BELOW THIS LINE -->\n"
-                "<!-- Replace with your actual taste -->\n\n"
-                "Describe your aesthetic preferences, interests, and what kind of content you enjoy.\n\n"
-                "Examples:\n"
-                "- I'm drawn to Japanese minimalism and wabi-sabi aesthetics\n"
-                "- I love long-form essays on philosophy and design\n"
-                "- I appreciate things that feel contemplative and unhurried\n\n"
-                "<!-- This template will be skipped until you customize it -->\n"
-            )
+    value, found = get_settings_value(settings_data, path)
+    if not found:
+        console.print(error(f"Path not found: {path}"))
+        # Suggest valid top-level keys
+        top_keys = list(settings_data.keys())
+        console.print(f"[dim]Available top-level keys: {', '.join(top_keys)}[/dim]")
+        raise typer.Exit(1)
 
+    # Display based on type
+    if isinstance(value, dict):
+        console.print(Panel(
+            yaml.dump(value, default_flow_style=False, sort_keys=False),
+            title=path,
+            border_style="blue",
+        ))
+    elif isinstance(value, list):
+        console.print(Panel(
+            yaml.dump(value, default_flow_style=False),
+            title=path,
+            border_style="blue",
+        ))
+    else:
+        console.print(f"[cyan]{path}[/cyan]: {value}")
+
+
+@settings_app.command("edit")
+def settings_edit_cmd(
+    path: Optional[str] = typer.Argument(None, help="Dotted path to edit (e.g., media.youtube)"),
+) -> None:
+    """Edit settings in $EDITOR.
+
+    If path is given, opens editor with just that section.
+    Changes are merged back into settings.yaml.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity settings edit                       [dim]# Edit whole file[/dim]
+      [dim]$[/dim] serendipity settings edit approaches            [dim]# Edit approaches section[/dim]
+      [dim]$[/dim] serendipity settings edit media.youtube         [dim]# Edit youtube config[/dim]
+      [dim]$[/dim] serendipity settings edit context_sources.whorl [dim]# Edit whorl config[/dim]
+    """
+    import yaml
+
+    storage = StorageManager()
+    settings_path = storage.settings_path
+
+    # Ensure file exists
+    if not settings_path.exists():
+        TypesConfig.from_yaml(settings_path)
+
+    if path is None:
+        # Edit whole file (existing behavior)
         editor = os.environ.get("EDITOR", "vim")
-        subprocess.run([editor, str(taste_path)])
-        console.print(success(f"Taste profile saved to {taste_path}"))
+        subprocess.run([editor, str(settings_path)])
+        console.print(success(f"Settings saved to {settings_path}"))
         return
 
-    # Default: show taste
-    taste_content = storage.load_taste()
-    if taste_content.strip():
-        console.print(Panel(taste_content, title="Taste Profile", border_style="blue"))
-    else:
-        console.print("[dim]No taste profile set. Run 'serendipity profile taste --edit' to create.[/dim]")
-    console.print(f"\n[dim]Taste file: {taste_path}[/dim]")
+    # Edit subset
+    settings_data = yaml.safe_load(settings_path.read_text()) or {}
+    value, found = get_settings_value(settings_data, path)
+
+    if not found:
+        console.print(error(f"Path not found: {path}"))
+        top_keys = list(settings_data.keys())
+        console.print(f"[dim]Available top-level keys: {', '.join(top_keys)}[/dim]")
+        raise typer.Exit(1)
+
+    # Write subset to temp file
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(f"# Editing: {path}\n")
+        f.write(f"# Save and close to apply changes\n\n")
+        f.write(yaml.dump(value, default_flow_style=False, sort_keys=False))
+        temp_path = Path(f.name)
+
+    try:
+        editor = os.environ.get("EDITOR", "vim")
+        subprocess.run([editor, str(temp_path)])
+
+        # Parse edited content
+        edited_content = temp_path.read_text()
+        # Remove comment lines for parsing
+        lines = [l for l in edited_content.split('\n') if not l.strip().startswith('#')]
+        edited = yaml.safe_load('\n'.join(lines))
+
+        # Validate that we have actual content
+        if edited is None:
+            console.print(error("Settings section is empty after editing. No changes made."))
+            raise typer.Exit(1)
+
+        # Merge back
+        if set_settings_value(settings_data, path, edited):
+            settings_path.write_text(yaml.dump(settings_data, default_flow_style=False, sort_keys=False))
+            console.print(success(f"Updated {path}"))
+        else:
+            console.print(error("Failed to update settings"))
+    except yaml.YAMLError as e:
+        console.print(error(f"Invalid YAML: {e}"))
+        raise typer.Exit(1)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
-@profile_app.command()
-def history(
-    show: bool = typer.Option(
-        False,
-        "--show",
-        help="Show recommendation history",
+@settings_app.command("add")
+def settings_add(
+    add_type: str = typer.Argument(
+        ...,
+        help="What to add: media, approach, or source",
     ),
-    liked: bool = typer.Option(
-        False,
-        "--liked",
-        help="Show only liked items",
-    ),
-    disliked: bool = typer.Option(
-        False,
-        "--disliked",
-        help="Show only disliked items",
-    ),
-    clear: bool = typer.Option(
-        False,
-        "--clear",
-        help="Clear all history",
-    ),
-    limit: int = typer.Option(
-        20,
-        "--limit",
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
         "-n",
-        help="Number of items to show",
+        help="Internal name (e.g., 'papers', 'serendipitous')",
     ),
-) -> None:
-    """View and manage recommendation history.
-
-    History tracks all recommendations shown to you, including feedback
-    (likes/dislikes) and whether learnings have been extracted.
-
-    [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity profile history                 [dim]# Show recent[/dim]
-      [dim]$[/dim] serendipity profile history --liked         [dim]# Show liked only[/dim]
-      [dim]$[/dim] serendipity profile history --clear         [dim]# Clear history[/dim]
-    """
-    storage = StorageManager()
-
-    if clear:
-        if typer.confirm("Are you sure you want to clear all history?"):
-            storage.clear_history()
-            console.print(success("History cleared"))
-        return
-
-    # Get entries
-    if liked:
-        entries = storage.get_liked_entries()[-limit:]
-        title = "Liked Recommendations"
-    elif disliked:
-        entries = storage.get_disliked_entries()[-limit:]
-        title = "Disliked Recommendations"
-    else:
-        entries = storage.load_recent_history(limit)
-        title = "Recent Recommendations"
-
-    if not entries:
-        console.print("[dim]No history found.[/dim]")
-        return
-
-    table = Table(title=title, show_lines=True)
-    table.add_column("Type", style="cyan", width=10)
-    table.add_column("URL", style="blue", no_wrap=False)
-    table.add_column("Feedback", style="green", width=10)
-
-    for entry in entries:
-        feedback_str = entry.feedback or "[dim]-[/dim]"
-        if entry.feedback == "liked":
-            feedback_str = "[green]👍[/green]"
-        elif entry.feedback == "disliked":
-            feedback_str = "[red]👎[/red]"
-
-        table.add_row(entry.type, entry.url, feedback_str)
-
-    console.print(table)
-    console.print(f"\n[dim]History file: {storage.history_path}[/dim]")
-
-
-@profile_app.command()
-def learnings(
+    display: Optional[str] = typer.Option(
+        None,
+        "--display",
+        "-d",
+        help="Display name (e.g., 'Academic Papers')",
+    ),
     interactive: bool = typer.Option(
         False,
         "--interactive",
         "-i",
-        help="Interactive learning extraction wizard",
+        help="Interactive wizard (prompts for all fields)",
     ),
-    show: bool = typer.Option(
-        False,
-        "--show",
-        help="Show current learnings",
+    source_type: Optional[str] = typer.Option(
+        None,
+        "--type",
+        "-t",
+        help="Source type: loader or mcp (only for 'source')",
     ),
-    edit: bool = typer.Option(
-        False,
-        "--edit",
-        help="Open learnings.md in $EDITOR",
-    ),
-    clear: bool = typer.Option(
-        False,
-        "--clear",
-        help="Clear all learnings",
+    path: Optional[str] = typer.Option(
+        None,
+        "--path",
+        help="File path (for loader sources)",
     ),
 ) -> None:
-    """Manage learnings extracted from your likes/dislikes.
-
-    Learnings compress patterns from your feedback into concise preferences
-    that guide future recommendations more efficiently.
+    """Add a new media type, approach, or context source.
 
     [bold cyan]EXAMPLES[/bold cyan]:
-      [dim]$[/dim] serendipity profile learnings           [dim]# Show learnings[/dim]
-      [dim]$[/dim] serendipity profile learnings -i        [dim]# Interactive wizard[/dim]
-      [dim]$[/dim] serendipity profile learnings --edit    [dim]# Edit in $EDITOR[/dim]
+      [dim]$[/dim] serendipity settings add media -i                     [dim]# Interactive[/dim]
+      [dim]$[/dim] serendipity settings add media -n papers -d "Papers"  [dim]# Quick add[/dim]
+      [dim]$[/dim] serendipity settings add approach -n lucky            [dim]# New approach[/dim]
+      [dim]$[/dim] serendipity settings add source -n notes -t loader    [dim]# Loader source[/dim]
+      [dim]$[/dim] serendipity settings add source -n custom -t mcp      [dim]# MCP source[/dim]
+    """
+    import yaml
+
+    from serendipity import settings as settings_module
+
+    valid_types = ["media", "approach", "source"]
+    if add_type not in valid_types:
+        console.print(error(f"Unknown type: {add_type}"))
+        console.print(f"[dim]Valid types: {', '.join(valid_types)}[/dim]")
+        raise typer.Exit(1)
+
+    # Interactive mode or missing required fields
+    if interactive or not name:
+        if add_type == "media":
+            _add_media_interactive()
+        elif add_type == "approach":
+            _add_approach_interactive()
+        elif add_type == "source":
+            _add_source_interactive(source_type)
+        return
+
+    # Non-interactive mode with explicit options
+    if add_type == "media":
+        new_config = settings_module.add_media(
+            name=name,
+            display_name=display,
+        )
+        console.print(success(f"Added media type '{name}'"))
+        console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+    elif add_type == "approach":
+        new_config = settings_module.add_approach(
+            name=name,
+            display_name=display,
+        )
+        console.print(success(f"Added approach '{name}'"))
+        console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+    elif add_type == "source":
+        if not source_type:
+            console.print(error("Source type required. Use --type loader or --type mcp"))
+            raise typer.Exit(1)
+        if source_type not in ["loader", "mcp"]:
+            console.print(error(f"Invalid source type: {source_type}"))
+            raise typer.Exit(1)
+
+        if source_type == "loader":
+            if not path:
+                console.print(error("Path required for loader sources. Use --path"))
+                raise typer.Exit(1)
+            new_config = settings_module.add_loader_source(name=name, path=path)
+        else:
+            new_config = settings_module.add_mcp_source(name=name)
+
+        console.print(success(f"Added {source_type} source '{name}'"))
+        console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+
+def _add_media_interactive() -> None:
+    """Interactive wizard for adding a media type."""
+    import yaml
+
+    from serendipity import settings as settings_module
+
+    console.print(Panel(
+        "Add a new media type (e.g., papers, courses, newsletters)",
+        title="Add Media Type",
+        border_style="blue",
+    ))
+
+    name = questionary.text(
+        "Internal name (lowercase, no spaces):",
+        validate=lambda x: bool(x.strip() and x.replace("_", "").isalnum()),
+    ).ask()
+    if not name:
+        console.print(warning("Cancelled"))
+        return
+
+    default_display = name.replace("_", " ").title()
+    display_name = questionary.text(
+        "Display name:",
+        default=default_display,
+    ).ask()
+    if not display_name:
+        display_name = default_display
+
+    search_hints = questionary.text(
+        "Search hints (use {query} placeholder):",
+        default="{query}",
+    ).ask()
+    if not search_hints:
+        search_hints = "{query}"
+
+    prompt_hint = questionary.text(
+        "Prompt hint (guidance for the agent):",
+        default=f"Search for {display_name.lower()}.",
+    ).ask()
+
+    # Add the media type
+    new_config = settings_module.add_media(
+        name=name,
+        display_name=display_name,
+        search_hints=search_hints,
+        prompt_hint=prompt_hint or "",
+    )
+
+    console.print(success(f"Added media type '{name}'"))
+    console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+
+def _add_approach_interactive() -> None:
+    """Interactive wizard for adding an approach."""
+    import yaml
+
+    from serendipity import settings as settings_module
+
+    console.print(Panel(
+        "Add a new discovery approach (how to find content)",
+        title="Add Approach",
+        border_style="blue",
+    ))
+
+    name = questionary.text(
+        "Internal name (lowercase, no spaces):",
+        validate=lambda x: bool(x.strip() and x.replace("_", "").isalnum()),
+    ).ask()
+    if not name:
+        console.print(warning("Cancelled"))
+        return
+
+    default_display = name.replace("_", " ").title()
+    display_name = questionary.text(
+        "Display name:",
+        default=default_display,
+    ).ask()
+    if not display_name:
+        display_name = default_display
+
+    prompt_hint = questionary.text(
+        "Prompt hint (guidance for this approach):",
+        default="- Find unique and interesting content",
+    ).ask()
+
+    new_config = settings_module.add_approach(
+        name=name,
+        display_name=display_name,
+        prompt_hint=prompt_hint or "",
+    )
+
+    console.print(success(f"Added approach '{name}'"))
+    console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+
+def _add_source_interactive(preset_type: Optional[str] = None) -> None:
+    """Interactive wizard for adding a context source."""
+    import yaml
+
+    from serendipity import settings as settings_module
+
+    console.print(Panel(
+        "Add a new context source (where to get user profile data)",
+        title="Add Context Source",
+        border_style="blue",
+    ))
+
+    # Determine source type
+    if preset_type and preset_type in ["loader", "mcp"]:
+        source_type = preset_type
+    else:
+        source_type = questionary.select(
+            "Source type:",
+            choices=[
+                questionary.Choice("loader - Load content from a file", value="loader"),
+                questionary.Choice("mcp - Connect to an MCP server", value="mcp"),
+            ],
+        ).ask()
+        if not source_type:
+            console.print(warning("Cancelled"))
+            return
+
+    name = questionary.text(
+        "Internal name (lowercase, no spaces):",
+        validate=lambda x: bool(x.strip() and x.replace("_", "").isalnum()),
+    ).ask()
+    if not name:
+        console.print(warning("Cancelled"))
+        return
+
+    description = questionary.text(
+        "Description:",
+        default=f"Content from {name}",
+    ).ask()
+
+    if source_type == "loader":
+        path = questionary.text(
+            "File path (supports ~):",
+            default=f"~/.serendipity/{name}.md",
+        ).ask()
+        if not path:
+            console.print(warning("Cancelled"))
+            return
+
+        new_config = settings_module.add_loader_source(
+            name=name,
+            path=path,
+            description=description,
+        )
+    else:  # mcp
+        server_url = questionary.text(
+            "Server URL template:",
+            default="http://localhost:{port}/mcp/",
+        ).ask()
+
+        cli_command = questionary.text(
+            "CLI command to start server:",
+            default=name,
+        ).ask()
+
+        port = questionary.text(
+            "Default port:",
+            default="8080",
+            validate=lambda x: x.isdigit(),
+        ).ask()
+
+        new_config = settings_module.add_mcp_source(
+            name=name,
+            server_url=server_url or "http://localhost:{port}/mcp/",
+            cli_command=cli_command,
+            port=int(port) if port else 8080,
+            description=description,
+        )
+
+    console.print(success(f"Added {source_type} source '{name}'"))
+    console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+
+# =============================================================================
+# Prompts management
+# =============================================================================
+
+VALID_PROMPTS = {
+    "discovery": ("discovery.txt", get_discovery_prompt),
+    "frontend_design": ("frontend_design.txt", get_frontend_design),
+    "system": ("system.txt", get_system_prompt),
+}
+
+
+@settings_app.command("prompts")
+def settings_prompts(
+    edit: Optional[str] = typer.Option(
+        None,
+        "--edit",
+        "-e",
+        help="Edit a prompt in $EDITOR (discovery, frontend_design, system)",
+    ),
+    reset: Optional[str] = typer.Option(
+        None,
+        "--reset",
+        "-r",
+        help="Reset a prompt to package default",
+    ),
+    show: Optional[str] = typer.Option(
+        None,
+        "--show",
+        "-s",
+        help="Show prompt content",
+    ),
+) -> None:
+    """Manage system prompts that control agent behavior.
+
+    These prompts define how the discovery agent searches and recommends content.
+    Edit them to customize the agent's behavior.
+
+    [bold cyan]PROMPTS[/bold cyan]:
+      discovery       - Main instructions for finding content
+      frontend_design - CSS generation guidelines
+      system          - Core system prompt (search behavior)
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity settings prompts                    [dim]# List all prompts[/dim]
+      [dim]$[/dim] serendipity settings prompts --show discovery   [dim]# View content[/dim]
+      [dim]$[/dim] serendipity settings prompts --edit discovery   [dim]# Edit in $EDITOR[/dim]
+      [dim]$[/dim] serendipity settings prompts --reset discovery  [dim]# Reset to default[/dim]
     """
     storage = StorageManager()
     storage.ensure_dirs()
 
-    if clear:
-        if not typer.confirm("Clear all learnings? This cannot be undone."):
+    if edit:
+        if edit not in VALID_PROMPTS:
+            console.print(error(f"Unknown prompt: {edit}"))
+            console.print(f"[dim]Valid prompts: {', '.join(VALID_PROMPTS.keys())}[/dim]")
+            raise typer.Exit(1)
+
+        filename, default_getter = VALID_PROMPTS[edit]
+        prompt_path = storage.get_prompt_path(filename, default_getter())
+
+        editor = os.environ.get("EDITOR", "vim")
+        subprocess.run([editor, str(prompt_path)])
+        console.print(success(f"Prompt saved to {prompt_path}"))
+        return
+
+    if reset:
+        if reset not in VALID_PROMPTS:
+            console.print(error(f"Unknown prompt: {reset}"))
+            console.print(f"[dim]Valid prompts: {', '.join(VALID_PROMPTS.keys())}[/dim]")
+            raise typer.Exit(1)
+
+        filename, default_getter = VALID_PROMPTS[reset]
+        prompt_path = storage.prompts_dir / filename
+
+        if not prompt_path.exists():
+            console.print(warning(f"Prompt '{reset}' is already using package default"))
+            return
+
+        if not typer.confirm(f"Reset '{reset}' to package default?"):
             console.print(warning("Cancelled"))
             return
-        storage.clear_learnings()
-        console.print(success("Learnings cleared"))
+
+        prompt_path.write_text(default_getter())
+        console.print(success(f"Reset '{reset}' to package default"))
         return
+
+    if show:
+        if show not in VALID_PROMPTS:
+            console.print(error(f"Unknown prompt: {show}"))
+            console.print(f"[dim]Valid prompts: {', '.join(VALID_PROMPTS.keys())}[/dim]")
+            raise typer.Exit(1)
+
+        filename, default_getter = VALID_PROMPTS[show]
+        prompt_path = storage.prompts_dir / filename
+
+        if prompt_path.exists():
+            content = prompt_path.read_text()
+            is_custom = content != default_getter()
+            status = "[yellow]custom[/yellow]" if is_custom else "[dim]default[/dim]"
+        else:
+            content = default_getter()
+            status = "[dim]default[/dim]"
+
+        console.print(Panel(
+            content,
+            title=f"{show} ({status})",
+            border_style="blue",
+        ))
+        return
+
+    # Default: list all prompts with status
+    console.print("\n[bold]Prompts[/bold] (agent instructions):")
+    for name, (filename, default_getter) in VALID_PROMPTS.items():
+        prompt_path = storage.prompts_dir / filename
+        if prompt_path.exists():
+            is_custom = prompt_path.read_text() != default_getter()
+            status = "[yellow]custom[/yellow]" if is_custom else "[dim]default[/dim]"
+        else:
+            status = "[dim]default[/dim]"
+        console.print(f"  [cyan]{name}[/cyan]: {status}")
+
+    console.print(f"\n[dim]Prompts: {storage.prompts_dir}[/dim]")
+    console.print(f"[dim]Edit: serendipity settings prompts --edit <name>[/dim]")
+
+
+@settings_app.command("style")
+def settings_style(
+    edit: bool = typer.Option(
+        False,
+        "--edit",
+        "-e",
+        help="Edit the CSS stylesheet in $EDITOR",
+    ),
+    reset: bool = typer.Option(
+        False,
+        "--reset",
+        "-r",
+        help="Reset stylesheet to package default",
+    ),
+    show: bool = typer.Option(
+        False,
+        "--show",
+        "-s",
+        help="Show current stylesheet",
+    ),
+) -> None:
+    """Manage the CSS stylesheet for recommendations.
+
+    The stylesheet controls the visual appearance of your recommendations page.
+    Edit it to customize colors, fonts, layout, etc.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity settings style          [dim]# Show status[/dim]
+      [dim]$[/dim] serendipity settings style --edit   [dim]# Edit in $EDITOR[/dim]
+      [dim]$[/dim] serendipity settings style --reset  [dim]# Reset to default[/dim]
+      [dim]$[/dim] serendipity settings style --show   [dim]# View current CSS[/dim]
+    """
+    storage = StorageManager()
+    storage.ensure_dirs()
+    default_css = get_default_style()
 
     if edit:
-        learnings_path = storage.learnings_path
-        if not learnings_path.exists():
-            learnings_path.write_text("# My Discovery Learnings\n\n## Likes\n\n## Dislikes\n")
+        style_path = storage.get_style_path(default_css)
         editor = os.environ.get("EDITOR", "vim")
-        subprocess.run([editor, str(learnings_path)])
-        console.print(success(f"Learnings saved to {learnings_path}"))
+        subprocess.run([editor, str(style_path)])
+        console.print(success(f"Style saved to {style_path}"))
         return
 
-    if interactive:
-        _learnings_interactive_wizard(storage)
+    if reset:
+        if not storage.style_path.exists():
+            console.print(warning("Style is already using package default"))
+            return
+
+        if not typer.confirm("Reset stylesheet to package default?"):
+            console.print(warning("Cancelled"))
+            return
+
+        storage.style_path.write_text(default_css)
+        console.print(success("Reset stylesheet to package default"))
         return
 
-    # Default: show learnings
-    learnings_content = storage.load_learnings()
-    if learnings_content.strip():
-        console.print(Panel(learnings_content, title="Discovery Learnings", border_style="blue"))
+    if show:
+        if storage.style_path.exists():
+            content = storage.style_path.read_text()
+            is_custom = content != default_css
+            status = "[yellow]custom[/yellow]" if is_custom else "[dim]default[/dim]"
+        else:
+            content = default_css
+            status = "[dim]default[/dim]"
+
+        console.print(Panel(
+            content,
+            title=f"style.css ({status})",
+            border_style="blue",
+        ))
+        return
+
+    # Default: show status
+    if storage.style_path.exists():
+        is_custom = storage.style_path.read_text() != default_css
+        status = "[yellow]custom[/yellow]" if is_custom else "[dim]default[/dim]"
     else:
-        console.print("[dim]No learnings yet. Run 'serendipity profile learnings -i' to extract from history.[/dim]")
-    console.print(f"\n[dim]Learnings file: {storage.learnings_path}[/dim]")
+        status = "[dim]default[/dim]"
 
+    console.print(f"\n[bold]Stylesheet[/bold]: {status}")
+    console.print(f"[dim]Path: {storage.style_path}[/dim]")
+    console.print(f"[dim]Edit: serendipity settings style --edit[/dim]")
+
+
+# =============================================================================
+# New generic profile get/edit commands
+# =============================================================================
+
+
+@profile_app.command("get")
+def profile_get(
+    source_name: str = typer.Argument(..., help="Name of the context source"),
+    # History-specific flags
+    liked: bool = typer.Option(False, "--liked", help="[history] Show only liked items"),
+    disliked: bool = typer.Option(False, "--disliked", help="[history] Show only disliked items"),
+    limit: int = typer.Option(20, "--limit", "-n", help="[history] Number of items to show"),
+    # Learnings-specific flags
+    interactive: bool = typer.Option(False, "--interactive", "-i", help="[learnings] Interactive wizard"),
+    # Universal flags
+    clear: bool = typer.Option(False, "--clear", help="Clear source content"),
+) -> None:
+    """View or manage a context source.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile get taste              [dim]# View taste profile[/dim]
+      [dim]$[/dim] serendipity profile get history --liked    [dim]# View liked items[/dim]
+      [dim]$[/dim] serendipity profile get history -n 50      [dim]# View 50 recent items[/dim]
+      [dim]$[/dim] serendipity profile get learnings -i       [dim]# Interactive extraction[/dim]
+      [dim]$[/dim] serendipity profile get taste --clear      [dim]# Clear taste profile[/dim]
+      [dim]$[/dim] serendipity profile get whorl              [dim]# View MCP source config[/dim]
+    """
+    storage = StorageManager()
+    storage.ensure_dirs()
+    settings = storage.load_config()
+
+    if source_name not in settings.context_sources:
+        console.print(error(f"Unknown source: {source_name}"))
+        console.print(f"[dim]Available: {', '.join(settings.context_sources.keys())}[/dim]")
+        raise typer.Exit(1)
+
+    source_config = settings.context_sources[source_name]
+
+    # Route to appropriate handler
+    if source_name == "history":
+        _handle_profile_history(storage, liked=liked, disliked=disliked, limit=limit, clear=clear)
+    elif source_name == "learnings":
+        _handle_profile_learnings(storage, interactive=interactive, clear=clear, edit=False)
+    elif source_config.type == "mcp":
+        if clear:
+            console.print(error(f"'{source_name}' is an MCP source (cannot be cleared)."))
+            raise typer.Exit(1)
+        _handle_profile_mcp_source(source_config)
+    else:
+        # Check if it's a file-based loader
+        is_editable, file_path = is_source_editable(source_config)
+        if is_editable:
+            _handle_profile_file_source(storage, source_config, file_path, clear=clear, edit=False)
+        else:
+            if clear:
+                console.print(error(f"'{source_name}' is not clearable (not file-based)."))
+                raise typer.Exit(1)
+            _handle_profile_generic_loader(storage, source_config)
+
+
+@profile_app.command("edit")
+def profile_edit(
+    source_name: str = typer.Argument(..., help="Name of the context source"),
+) -> None:
+    """Edit a context source in $EDITOR.
+
+    Only file-based sources can be edited. MCP sources and dynamic loaders
+    (like style_guidance) are read-only.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile edit taste       [dim]# Edit taste.md[/dim]
+      [dim]$[/dim] serendipity profile edit learnings   [dim]# Edit learnings.md[/dim]
+      [dim]$[/dim] serendipity profile edit notes       [dim]# Edit notes.md[/dim]
+    """
+    storage = StorageManager()
+    storage.ensure_dirs()
+    settings = storage.load_config()
+
+    if source_name not in settings.context_sources:
+        console.print(error(f"Unknown source: {source_name}"))
+        console.print(f"[dim]Available: {', '.join(settings.context_sources.keys())}[/dim]")
+        raise typer.Exit(1)
+
+    source_config = settings.context_sources[source_name]
+
+    # Special handling for learnings (has its own edit logic)
+    if source_name == "learnings":
+        _handle_profile_learnings(storage, interactive=False, clear=False, edit=True)
+        return
+
+    # Check if source is editable
+    if source_config.type == "mcp":
+        console.print(error(f"'{source_name}' is an MCP source (read-only)."))
+        console.print(f"[dim]Use 'serendipity profile get {source_name}' to view its configuration.[/dim]")
+        raise typer.Exit(1)
+
+    is_editable, file_path = is_source_editable(source_config)
+    if not is_editable:
+        console.print(error(f"'{source_name}' is not editable (no file path)."))
+        console.print(f"[dim]This source uses loader: {source_config.raw_config.get('loader', 'unknown')}[/dim]")
+        raise typer.Exit(1)
+
+    _handle_profile_file_source(storage, source_config, file_path, clear=False, edit=True)
 
 def _learnings_interactive_wizard(storage: StorageManager) -> None:
     """Interactive wizard for learning extraction."""
@@ -1647,6 +2487,201 @@ def _write_learning_workflow(storage: StorageManager) -> None:
     if mark_items and matching_urls:
         count = storage.mark_extracted(matching_urls)
         console.print(success(f"Marked {count} items as extracted"))
+
+
+# Profile management commands (multi-profile support)
+
+@profile_app.command("list")
+def profile_list() -> None:
+    """List all available profiles.
+
+    Shows all profiles with the active one marked with *.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile list
+    """
+    pm = ProfileManager()
+    profiles = pm.list_profiles()
+    active = pm.get_active_profile()
+
+    console.print("\n[bold]Profiles[/bold]")
+    for name in profiles:
+        marker = " *" if name == active else ""
+        console.print(f"  {name}{marker}")
+
+    console.print(f"\n[dim]Active: {active}[/dim]")
+    if os.environ.get("SERENDIPITY_PROFILE"):
+        console.print(f"[dim](via SERENDIPITY_PROFILE env var)[/dim]")
+
+
+@profile_app.command("create")
+def profile_create(
+    name: str = typer.Argument(..., help="Name for the new profile"),
+    from_profile: Optional[str] = typer.Option(
+        None,
+        "--from",
+        "-f",
+        help="Copy from existing profile",
+    ),
+) -> None:
+    """Create a new profile.
+
+    Creates an empty profile or copies from an existing one.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile create work
+      [dim]$[/dim] serendipity profile create minimalist --from default
+    """
+    pm = ProfileManager()
+
+    try:
+        path = pm.create_profile(name, from_profile=from_profile)
+        if from_profile:
+            console.print(success(f"Created profile '{name}' (copied from '{from_profile}')"))
+        else:
+            console.print(success(f"Created profile '{name}'"))
+        console.print(f"[dim]{path}[/dim]")
+        console.print(f"\n[dim]Switch to it: serendipity profile use {name}[/dim]")
+    except ValueError as e:
+        console.print(error(str(e)))
+        raise typer.Exit(1)
+
+
+@profile_app.command("use")
+def profile_use(
+    name: str = typer.Argument(..., help="Profile to switch to"),
+) -> None:
+    """Switch to a different profile.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile use work
+      [dim]$[/dim] serendipity profile use default
+    """
+    pm = ProfileManager()
+
+    try:
+        pm.set_active_profile(name)
+        console.print(success(f"Switched to profile '{name}'"))
+    except ValueError as e:
+        console.print(error(str(e)))
+        console.print(f"[dim]Available profiles: {', '.join(pm.list_profiles())}[/dim]")
+        raise typer.Exit(1)
+
+
+@profile_app.command("delete")
+def profile_delete(
+    name: str = typer.Argument(..., help="Profile to delete"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+) -> None:
+    """Delete a profile.
+
+    Cannot delete the currently active profile. Switch to another first.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile delete old-profile
+      [dim]$[/dim] serendipity profile delete temp --force
+    """
+    pm = ProfileManager()
+
+    if not pm.profile_exists(name):
+        console.print(error(f"Profile '{name}' does not exist"))
+        raise typer.Exit(1)
+
+    if not force:
+        if not typer.confirm(f"Delete profile '{name}'? This cannot be undone."):
+            console.print(warning("Cancelled"))
+            return
+
+    try:
+        pm.delete_profile(name)
+        console.print(success(f"Deleted profile '{name}'"))
+    except ValueError as e:
+        console.print(error(str(e)))
+        raise typer.Exit(1)
+
+
+@profile_app.command("rename")
+def profile_rename(
+    old_name: str = typer.Argument(..., help="Current profile name"),
+    new_name: str = typer.Argument(..., help="New profile name"),
+) -> None:
+    """Rename a profile.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile rename work business
+    """
+    pm = ProfileManager()
+
+    try:
+        pm.rename_profile(old_name, new_name)
+        console.print(success(f"Renamed '{old_name}' to '{new_name}'"))
+    except ValueError as e:
+        console.print(error(str(e)))
+        raise typer.Exit(1)
+
+
+@profile_app.command("export")
+def profile_export(
+    name: Optional[str] = typer.Argument(
+        None,
+        help="Profile to export (defaults to active profile)",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output file path (defaults to {name}.tar.gz)",
+    ),
+) -> None:
+    """Export a profile to a tar.gz archive.
+
+    Exports the profile directory for sharing or backup.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile export                    [dim]# Export active profile[/dim]
+      [dim]$[/dim] serendipity profile export work               [dim]# Export specific profile[/dim]
+      [dim]$[/dim] serendipity profile export work -o backup.tar.gz
+    """
+    pm = ProfileManager()
+    profile_name = name or pm.get_active_profile()
+
+    try:
+        output_path = pm.export_profile(profile_name, output)
+        console.print(success(f"Exported '{profile_name}' to {output_path}"))
+    except ValueError as e:
+        console.print(error(str(e)))
+        raise typer.Exit(1)
+
+
+@profile_app.command("import")
+def profile_import(
+    archive: Path = typer.Argument(..., help="Path to the .tar.gz archive"),
+    name: Optional[str] = typer.Option(
+        None,
+        "--as",
+        help="Import with a different name",
+    ),
+) -> None:
+    """Import a profile from a tar.gz archive.
+
+    [bold cyan]EXAMPLES[/bold cyan]:
+      [dim]$[/dim] serendipity profile import friend-taste.tar.gz
+      [dim]$[/dim] serendipity profile import backup.tar.gz --as restored
+    """
+    pm = ProfileManager()
+
+    try:
+        imported_name = pm.import_profile(archive, name)
+        console.print(success(f"Imported profile '{imported_name}'"))
+        console.print(f"\n[dim]Switch to it: serendipity profile use {imported_name}[/dim]")
+    except ValueError as e:
+        console.print(error(str(e)))
+        raise typer.Exit(1)
 
 
 def cli() -> None:

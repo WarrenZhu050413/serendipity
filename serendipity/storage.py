@@ -2,14 +2,24 @@
 
 Configuration is now in settings.yaml (via TypesConfig).
 This module handles history.jsonl, learnings.md, and output files.
+
+Supports multi-profile storage via ProfileManager.
 """
 
 import json
+import os
 import shutil
+import sys
+import tarfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+import yaml
+
+if TYPE_CHECKING:
+    from serendipity.config.types import TypesConfig
 
 
 @dataclass
@@ -74,23 +84,336 @@ class HistoryEntry:
         )
 
 
+class ProfileManager:
+    """Manages multiple serendipity profiles.
+
+    Profiles are stored in ~/.serendipity/profiles/{name}/ directories.
+    The active profile is tracked in ~/.serendipity/profiles.yaml.
+    """
+
+    DEFAULT_PROFILE = "default"
+
+    def __init__(self, root_dir: Optional[Path] = None):
+        """Initialize profile manager.
+
+        Args:
+            root_dir: Root directory for serendipity. Defaults to ~/.serendipity
+        """
+        self.root_dir = root_dir or Path.home() / ".serendipity"
+        self.profiles_dir = self.root_dir / "profiles"
+        self.registry_path = self.root_dir / "profiles.yaml"
+
+    def _load_registry(self) -> dict:
+        """Load profiles registry."""
+        if not self.registry_path.exists():
+            return {"active": self.DEFAULT_PROFILE, "profiles": [self.DEFAULT_PROFILE]}
+        try:
+            return yaml.safe_load(self.registry_path.read_text()) or {}
+        except yaml.YAMLError:
+            return {"active": self.DEFAULT_PROFILE, "profiles": [self.DEFAULT_PROFILE]}
+
+    def _save_registry(self, registry: dict) -> None:
+        """Save profiles registry."""
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.registry_path.write_text(yaml.dump(registry, default_flow_style=False))
+
+    def list_profiles(self) -> list[str]:
+        """List all available profiles."""
+        registry = self._load_registry()
+        profiles = registry.get("profiles", [self.DEFAULT_PROFILE])
+        # Also check filesystem for any profiles not in registry
+        if self.profiles_dir.exists():
+            for path in self.profiles_dir.iterdir():
+                if path.is_dir() and path.name not in profiles:
+                    profiles.append(path.name)
+        return sorted(profiles)
+
+    def get_active_profile(self) -> str:
+        """Get the currently active profile name.
+
+        Checks SERENDIPITY_PROFILE environment variable first.
+        """
+        env_profile = os.environ.get("SERENDIPITY_PROFILE")
+        if env_profile:
+            return env_profile
+        registry = self._load_registry()
+        return registry.get("active", self.DEFAULT_PROFILE)
+
+    def set_active_profile(self, name: str) -> None:
+        """Set the active profile.
+
+        Args:
+            name: Profile name to activate
+
+        Raises:
+            ValueError: If profile doesn't exist
+        """
+        if not self.profile_exists(name):
+            raise ValueError(f"Profile '{name}' does not exist")
+        registry = self._load_registry()
+        registry["active"] = name
+        self._save_registry(registry)
+
+    def profile_exists(self, name: str) -> bool:
+        """Check if a profile exists."""
+        return self.get_profile_path(name).exists()
+
+    def get_profile_path(self, name: str) -> Path:
+        """Get the directory path for a profile."""
+        return self.profiles_dir / name
+
+    def create_profile(
+        self,
+        name: str,
+        from_profile: Optional[str] = None,
+    ) -> Path:
+        """Create a new profile.
+
+        Args:
+            name: Name for the new profile
+            from_profile: Optional profile to copy from
+
+        Returns:
+            Path to the new profile directory
+
+        Raises:
+            ValueError: If profile already exists or source doesn't exist
+        """
+        if self.profile_exists(name):
+            raise ValueError(f"Profile '{name}' already exists")
+
+        profile_path = self.get_profile_path(name)
+
+        if from_profile:
+            if not self.profile_exists(from_profile):
+                raise ValueError(f"Source profile '{from_profile}' does not exist")
+            source_path = self.get_profile_path(from_profile)
+            shutil.copytree(source_path, profile_path)
+        else:
+            profile_path.mkdir(parents=True, exist_ok=True)
+            # Create loaders directory
+            (profile_path / "loaders").mkdir(exist_ok=True)
+
+        # Update registry
+        registry = self._load_registry()
+        if "profiles" not in registry:
+            registry["profiles"] = []
+        if name not in registry["profiles"]:
+            registry["profiles"].append(name)
+        self._save_registry(registry)
+
+        return profile_path
+
+    def delete_profile(self, name: str) -> None:
+        """Delete a profile.
+
+        Args:
+            name: Profile to delete
+
+        Raises:
+            ValueError: If profile doesn't exist or is the active profile
+        """
+        if not self.profile_exists(name):
+            raise ValueError(f"Profile '{name}' does not exist")
+
+        active = self.get_active_profile()
+        if name == active:
+            raise ValueError(f"Cannot delete active profile '{name}'. Switch to another profile first.")
+
+        # Delete directory
+        profile_path = self.get_profile_path(name)
+        shutil.rmtree(profile_path)
+
+        # Update registry
+        registry = self._load_registry()
+        if name in registry.get("profiles", []):
+            registry["profiles"].remove(name)
+        self._save_registry(registry)
+
+    def rename_profile(self, old_name: str, new_name: str) -> None:
+        """Rename a profile.
+
+        Args:
+            old_name: Current profile name
+            new_name: New profile name
+
+        Raises:
+            ValueError: If old profile doesn't exist or new name is taken
+        """
+        if not self.profile_exists(old_name):
+            raise ValueError(f"Profile '{old_name}' does not exist")
+        if self.profile_exists(new_name):
+            raise ValueError(f"Profile '{new_name}' already exists")
+
+        old_path = self.get_profile_path(old_name)
+        new_path = self.get_profile_path(new_name)
+        old_path.rename(new_path)
+
+        # Update registry
+        registry = self._load_registry()
+        if old_name in registry.get("profiles", []):
+            registry["profiles"].remove(old_name)
+            registry["profiles"].append(new_name)
+        if registry.get("active") == old_name:
+            registry["active"] = new_name
+        self._save_registry(registry)
+
+    def export_profile(
+        self,
+        name: str,
+        output_path: Optional[Path] = None,
+    ) -> Path:
+        """Export a profile to a tar.gz archive.
+
+        Args:
+            name: Profile to export
+            output_path: Output file path. Defaults to {name}.tar.gz in current dir
+
+        Returns:
+            Path to the created archive
+
+        Raises:
+            ValueError: If profile doesn't exist
+        """
+        if not self.profile_exists(name):
+            raise ValueError(f"Profile '{name}' does not exist")
+
+        if output_path is None:
+            output_path = Path.cwd() / f"{name}.tar.gz"
+
+        profile_path = self.get_profile_path(name)
+
+        with tarfile.open(output_path, "w:gz") as tar:
+            # Add profile directory with its name as the root
+            tar.add(profile_path, arcname=name)
+
+        return output_path
+
+    def import_profile(
+        self,
+        archive_path: Path,
+        name: Optional[str] = None,
+    ) -> str:
+        """Import a profile from a tar.gz archive.
+
+        Args:
+            archive_path: Path to the archive file
+            name: Optional name override. If not provided, uses directory name from archive
+
+        Returns:
+            Name of the imported profile
+
+        Raises:
+            ValueError: If archive is invalid or profile already exists
+        """
+        if not archive_path.exists():
+            raise ValueError(f"Archive not found: {archive_path}")
+
+        with tarfile.open(archive_path, "r:gz") as tar:
+            # Find the root directory name in the archive
+            members = tar.getmembers()
+            if not members:
+                raise ValueError("Empty archive")
+
+            # Get the root directory name
+            root_name = members[0].name.split("/")[0]
+
+            # Use provided name or root name
+            profile_name = name or root_name
+
+            if self.profile_exists(profile_name):
+                raise ValueError(f"Profile '{profile_name}' already exists")
+
+            # Extract to a temp location first
+            import tempfile
+            with tempfile.TemporaryDirectory() as temp_dir:
+                tar.extractall(temp_dir)
+                extracted_path = Path(temp_dir) / root_name
+
+                # Move to profiles directory
+                profile_path = self.get_profile_path(profile_name)
+                shutil.copytree(extracted_path, profile_path)
+
+        # Update registry
+        registry = self._load_registry()
+        if "profiles" not in registry:
+            registry["profiles"] = []
+        if profile_name not in registry["profiles"]:
+            registry["profiles"].append(profile_name)
+        self._save_registry(registry)
+
+        return profile_name
+
+    def ensure_default_profile(self) -> None:
+        """Ensure the default profile exists."""
+        if not self.profile_exists(self.DEFAULT_PROFILE):
+            self.create_profile(self.DEFAULT_PROFILE)
+
+    def add_loaders_to_path(self, profile_name: Optional[str] = None) -> None:
+        """Add profile's loaders directory to Python path.
+
+        Args:
+            profile_name: Profile name. Defaults to active profile.
+        """
+        name = profile_name or self.get_active_profile()
+        loaders_path = self.get_profile_path(name) / "loaders"
+        if loaders_path.exists() and str(loaders_path) not in sys.path:
+            sys.path.insert(0, str(loaders_path))
+
+
 class StorageManager:
     """Manages serendipity storage: history, learnings, and output files.
 
-    Note: Configuration is now handled by TypesConfig in settings.yaml.
+    Supports multi-profile storage. Uses ProfileManager to determine base directory.
     """
 
-    def __init__(self, base_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        base_dir: Optional[Path] = None,
+        profile: Optional[str] = None,
+        profile_manager: Optional[ProfileManager] = None,
+    ):
         """Initialize storage manager.
 
         Args:
-            base_dir: Base directory for storage. Defaults to ~/.serendipity
+            base_dir: Base directory for storage. If provided, overrides profile-based resolution.
+            profile: Profile name to use. Defaults to active profile.
+            profile_manager: ProfileManager instance. Created if not provided.
         """
-        self.base_dir = base_dir or Path.home() / ".serendipity"
+        if base_dir:
+            # Direct base_dir takes precedence (for testing or explicit paths)
+            self.base_dir = base_dir
+            self.profile_manager = None
+            self.profile_name = None
+        else:
+            # Use profile-based resolution
+            self.profile_manager = profile_manager or ProfileManager()
+            self.profile_name = profile or self.profile_manager.get_active_profile()
+            self.profile_manager.ensure_default_profile()
+            self.base_dir = self.profile_manager.get_profile_path(self.profile_name)
+            # Add profile's loaders to Python path
+            self.profile_manager.add_loaders_to_path(self.profile_name)
 
     @property
     def settings_path(self) -> Path:
         return self.base_dir / "settings.yaml"
+
+    def load_config(self) -> "TypesConfig":
+        """Load TypesConfig with proper variable context for this profile.
+
+        This is the preferred way to load config as it handles template
+        variable expansion automatically.
+
+        Returns:
+            TypesConfig with {profile_dir}, {profile_name}, {home} expanded
+        """
+        from serendipity.config.types import TypesConfig, build_variable_context
+
+        context = build_variable_context(
+            profile_dir=self.base_dir,
+            profile_name=self.profile_name,
+        )
+        return TypesConfig.from_yaml(self.settings_path, variable_context=context)
 
     @property
     def history_path(self) -> Path:
@@ -109,8 +432,49 @@ class StorageManager:
         return self.base_dir / "template.html"
 
     @property
+    def style_path(self) -> Path:
+        return self.base_dir / "style.css"
+
+    @property
     def output_dir(self) -> Path:
         return self.base_dir / "output"
+
+    @property
+    def prompts_dir(self) -> Path:
+        return self.base_dir / "prompts"
+
+    def get_prompt_path(self, name: str, default_content: str) -> Path:
+        """Get user prompt path, creating from default if missing.
+
+        Auto-creates on first run so users can immediately see/edit.
+
+        Args:
+            name: Prompt filename (e.g., "discovery.txt")
+            default_content: Default content from package resource
+
+        Returns:
+            Path to the user's prompt file
+        """
+        path = self.prompts_dir / name
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(default_content)
+        return path
+
+    def prompt_is_customized(self, name: str, default_content: str) -> bool:
+        """Check if user has modified this prompt from package default.
+
+        Args:
+            name: Prompt filename (e.g., "discovery.txt")
+            default_content: Default content from package resource
+
+        Returns:
+            True if user has customized the prompt
+        """
+        path = self.prompts_dir / name
+        if not path.exists():
+            return False
+        return path.read_text() != default_content
 
     def get_template_path(self, default_content: str) -> Path:
         """Get template path, writing default content on first use.
@@ -126,6 +490,34 @@ class StorageManager:
             self.template_path.write_text(default_content)
 
         return self.template_path
+
+    def get_style_path(self, default_content: str) -> Path:
+        """Get style path, writing default content on first use.
+
+        Args:
+            default_content: Default CSS content to write if user style doesn't exist
+
+        Returns:
+            Path to the user's style file
+        """
+        if not self.style_path.exists():
+            self.style_path.parent.mkdir(parents=True, exist_ok=True)
+            self.style_path.write_text(default_content)
+
+        return self.style_path
+
+    def style_is_customized(self, default_content: str) -> bool:
+        """Check if user has modified the style from package default.
+
+        Args:
+            default_content: Default content from package resource
+
+        Returns:
+            True if user has customized the style
+        """
+        if not self.style_path.exists():
+            return False
+        return self.style_path.read_text() != default_content
 
     def ensure_dirs(self) -> None:
         """Ensure storage directories exist."""

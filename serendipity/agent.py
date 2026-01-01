@@ -27,12 +27,19 @@ from serendipity.config.types import TypesConfig
 from serendipity.display import AgentDisplay, DisplayConfig
 from serendipity.models import HtmlStyle, Recommendation
 from serendipity.prompts.builder import PromptBuilder
-from serendipity.resources import get_base_template, get_discovery_prompt, get_frontend_design
+from serendipity.resources import (
+    get_base_template,
+    get_default_style,
+    get_discovery_prompt,
+    get_frontend_design,
+    get_system_prompt,
+)
 
 # Type hint import to avoid circular import
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from serendipity.context_sources import ContextSourceManager
+    from serendipity.storage import StorageManager
 
 # Configure structured logging
 structlog.configure(
@@ -79,6 +86,7 @@ class SerendipityAgent:
         template_path: Optional[Path] = None,
         max_thinking_tokens: Optional[int] = None,
         types_config: Optional[TypesConfig] = None,
+        storage: Optional["StorageManager"] = None,
     ):
         """Initialize the Serendipity agent.
 
@@ -91,6 +99,7 @@ class SerendipityAgent:
             template_path: Path to HTML template (defaults to package template)
             max_thinking_tokens: Max tokens for extended thinking (None=disabled)
             types_config: TypesConfig for approach/media type guidance
+            storage: StorageManager for user-customizable prompts
         """
         self.console = console or Console()
         self.model = model
@@ -100,13 +109,32 @@ class SerendipityAgent:
         self.max_thinking_tokens = max_thinking_tokens
         self.types_config = types_config or TypesConfig.default()
         self.prompt_builder = PromptBuilder(self.types_config)
-        self.prompt_template = get_discovery_prompt()
+
+        # Load prompts and style from user paths (auto-creates from defaults on first run)
+        if storage:
+            self.prompt_template = storage.get_prompt_path(
+                "discovery.txt", get_discovery_prompt()
+            ).read_text()
+            self.frontend_design = storage.get_prompt_path(
+                "frontend_design.txt", get_frontend_design()
+            ).read_text()
+            self.system_prompt = storage.get_prompt_path(
+                "system.txt", get_system_prompt()
+            ).read_text()
+            self.style_css = storage.get_style_path(get_default_style()).read_text()
+        else:
+            # Fallback to package defaults (for tests without storage)
+            self.prompt_template = get_discovery_prompt()
+            self.frontend_design = get_frontend_design()
+            self.system_prompt = get_system_prompt()
+            self.style_css = get_default_style()
+
         # Use provided template path or fall back to package default
         if template_path:
             self.base_template = template_path.read_text()
         else:
             self.base_template = get_base_template()
-        self.frontend_design = get_frontend_design()
+
         self.output_dir = OUTPUT_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.last_session_id: Optional[str] = None
@@ -176,11 +204,13 @@ class SerendipityAgent:
         # Build type guidance from config (includes total_count, approaches, media types)
         type_guidance = self.prompt_builder.build_type_guidance()
 
+        # Note: template_content and frontend_design are kept for backwards compatibility
+        # with user-customized prompts that may still reference them
         prompt = self.prompt_template.format(
             user_context=full_context,
+            type_guidance=type_guidance,
             template_content=self.base_template,
             frontend_design=self.frontend_design,
-            type_guidance=type_guidance,
         )
 
         # Build allowed tools list from context sources
@@ -190,12 +220,8 @@ class SerendipityAgent:
         mcp_servers = self._get_mcp_servers()
         system_prompt_hints = self._get_system_prompt_hints()
 
-        base_system_prompt = (
-            "You are a discovery engine that finds REAL, VERIFIED content. "
-            "CRITICAL: You MUST use WebSearch before recommending ANY URL. "
-            "NEVER output URLs from memory - always search and verify first. "
-            "URLs from your training data are likely outdated or broken."
-        )
+        # Use user-customizable system prompt
+        base_system_prompt = self.system_prompt
         if system_prompt_hints:
             base_system_prompt += " " + system_prompt_hints
 
@@ -272,13 +298,13 @@ class SerendipityAgent:
         self.last_session_id = session_id
         self.cost_usd = cost_usd
 
-        # Parse response with separate extractors for recommendations and CSS
+        # Parse response for recommendations (CSS now loaded from file)
         full_response = "".join(response_text)
         parsed = self._parse_response(full_response)
 
-        # Build HTML from template
+        # Build HTML from template with file-based CSS
         html_content = self.base_template
-        html_content = html_content.replace("{css}", parsed.get("css", ""))
+        html_content = html_content.replace("{css}", self.style_css)
 
         # Combine all recommendations into a single list for masonry grid
         all_recs = parsed.get("convergent", []) + parsed.get("divergent", [])
@@ -292,23 +318,15 @@ class SerendipityAgent:
         # Write HTML to output
         output_path.write_text(html_content)
 
-        # Extract html_style for result
-        html_style = None
-        if parsed.get("css"):
-            html_style = HtmlStyle(
-                description="Custom CSS from Claude",
-                css=parsed.get("css", ""),
-            )
+        # CSS is now file-based, not generated
+        html_style = HtmlStyle(
+            description="User CSS from ~/.serendipity/style.css",
+            css=self.style_css,
+        )
 
         return DiscoveryResult(
-            convergent=[
-                Recommendation(url=r.get("url", ""), reason=r.get("reason", ""))
-                for r in parsed.get("convergent", [])
-            ],
-            divergent=[
-                Recommendation(url=r.get("url", ""), reason=r.get("reason", ""))
-                for r in parsed.get("divergent", [])
-            ],
+            convergent=parsed.get("convergent", []),
+            divergent=parsed.get("divergent", []),
             session_id=session_id,
             cost_usd=cost_usd,
             raw_response=full_response,
@@ -446,17 +464,15 @@ Output as JSON:
         ]
 
     def _parse_response(self, text: str) -> dict:
-        """Extract recommendations and CSS from response text.
+        """Extract recommendations from response text.
 
-        Parses separate <recommendations> JSON and <css> sections to avoid
-        JSON parsing failures from CSS special characters.
+        Parses <recommendations> JSON section.
 
         Returns dict with:
             - convergent: list[Recommendation]
             - divergent: list[Recommendation]
-            - css: str
         """
-        result = {"convergent": [], "divergent": [], "css": ""}
+        result = {"convergent": [], "divergent": []}
 
         def parse_recs(data: dict) -> tuple[list[Recommendation], list[Recommendation]]:
             """Parse raw dicts into Recommendation objects."""
@@ -479,11 +495,6 @@ Output as JSON:
             except json.JSONDecodeError:
                 self.console.print("[yellow]Warning: Could not parse recommendations JSON[/yellow]")
                 pass
-
-        # Extract CSS from <css> tags (no JSON parsing needed)
-        css_match = re.search(r"<css>\s*(.*?)\s*</css>", text, re.DOTALL)
-        if css_match:
-            result["css"] = css_match.group(1)
 
         # Fallback: try legacy formats if no recommendations found
         if not result["convergent"] and not result["divergent"]:
