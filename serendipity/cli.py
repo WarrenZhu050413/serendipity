@@ -1043,17 +1043,34 @@ def _start_feedback_server(
             await server.stop()
 
     def thread_target():
+        import sys
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+
+        # Log thread start
+        console.print(f"[dim]Server thread started (thread={threading.current_thread().name})[/dim]")
+
+        def handle_exception(loop, context):
+            """Catch unhandled exceptions in the event loop."""
+            msg = context.get("exception", context["message"])
+            console.print(f"[red]Event loop exception: {msg}[/red]")
+            import traceback
+            if "exception" in context:
+                traceback.print_exception(type(context["exception"]), context["exception"], context["exception"].__traceback__)
+
+        loop.set_exception_handler(handle_exception)
+
         try:
             loop.run_until_complete(run_server())
         except KeyboardInterrupt:
             pass
-        except Exception as e:
+        except BaseException as e:
             import traceback
-            port_queue.put(e)  # Signal error to main thread
-            console.print(f"[red]Feedback server error: {e}[/red]")
+            console.print(f"[red]Server thread crashed: {type(e).__name__}: {e}[/red]")
             traceback.print_exc()
+            port_queue.put(e)  # Signal error to main thread
+        finally:
+            console.print(f"[yellow]Server thread exiting[/yellow]")
 
     thread = threading.Thread(target=thread_target, daemon=True)
     thread.start()

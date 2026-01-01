@@ -112,7 +112,7 @@ class TestStorageManager:
 
     def test_learnings_path(self, storage, temp_dir):
         """Test learnings_path property."""
-        assert storage.learnings_path == temp_dir / "learnings.md"
+        assert storage.learnings_path == temp_dir / "user_data" / "learnings.md"
 
     def test_load_learnings_empty(self, storage):
         """Test loading learnings when file doesn't exist."""
@@ -164,7 +164,7 @@ class TestStorageManager:
 
     def test_taste_path(self, storage, temp_dir):
         """Test taste_path property."""
-        assert storage.taste_path == temp_dir / "taste.md"
+        assert storage.taste_path == temp_dir / "user_data" / "taste.md"
 
     def test_mark_extracted(self, storage):
         """Test marking entries as extracted."""
@@ -549,7 +549,7 @@ class TestMigration:
             yield Path(tmpdir)
 
     def test_migrate_preferences_to_taste(self, temp_dir):
-        """Test migrating preferences.md to taste.md."""
+        """Test migrating preferences.md to taste.md in user_data/."""
         storage = StorageManager(base_dir=temp_dir)
         storage.ensure_dirs()
 
@@ -559,13 +559,13 @@ class TestMigration:
 
         migrations = storage.migrate_if_needed()
 
-        assert "preferences.md → taste.md" in migrations[0]
+        assert "preferences.md → user_data/taste.md" in migrations[0]
         assert not old_file.exists()
-        assert (temp_dir / "taste.md").exists()
-        assert (temp_dir / "taste.md").read_text() == "# My Old Preferences"
+        assert (temp_dir / "user_data" / "taste.md").exists()
+        assert (temp_dir / "user_data" / "taste.md").read_text() == "# My Old Preferences"
 
     def test_migrate_rules_to_learnings(self, temp_dir):
-        """Test migrating rules.md to learnings.md."""
+        """Test migrating rules.md to learnings.md in user_data/."""
         storage = StorageManager(base_dir=temp_dir)
         storage.ensure_dirs()
 
@@ -575,9 +575,9 @@ class TestMigration:
 
         migrations = storage.migrate_if_needed()
 
-        assert "rules.md → learnings.md" in migrations[0]
+        assert "rules.md → user_data/learnings.md" in migrations[0]
         assert not old_file.exists()
-        assert (temp_dir / "learnings.md").exists()
+        assert (temp_dir / "user_data" / "learnings.md").exists()
 
     def test_migrate_types_to_settings(self, temp_dir):
         """Test migrating types.yaml to settings.yaml."""
@@ -613,15 +613,15 @@ class TestMigration:
         storage = StorageManager(base_dir=temp_dir)
         storage.ensure_dirs()
 
-        # Create both old and new files
+        # Create both old and new files (new file in user_data/)
         (temp_dir / "preferences.md").write_text("Old content")
-        (temp_dir / "taste.md").write_text("New content")
+        (temp_dir / "user_data" / "taste.md").write_text("New content")
 
         migrations = storage.migrate_if_needed()
 
         # Should not migrate since new file exists
         assert len(migrations) == 0
-        assert (temp_dir / "taste.md").read_text() == "New content"
+        assert (temp_dir / "user_data" / "taste.md").read_text() == "New content"
 
     def test_no_migration_when_nothing_to_migrate(self, temp_dir):
         """Test that migration returns empty when nothing to do."""

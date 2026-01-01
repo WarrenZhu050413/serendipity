@@ -127,6 +127,30 @@ serendipity profile list                # List all profiles
 serendipity profile create work         # Create new profile
 serendipity profile switch work         # Switch active profile
 serendipity profile manage              # Edit taste.md
+serendipity profile build               # Interactive profile builder
+```
+
+### Building Your Profile
+
+The interactive profile builder uses Claude with extended thinking to craft your taste profile through guided questions:
+
+```bash
+serendipity profile build               # Start building
+serendipity profile build --reset       # Start fresh
+```
+
+The builder:
+- Asks multi-select questions about your preferences
+- Synthesizes answers into a coherent taste profile
+- Lets you revise with feedback until satisfied
+- Previews what recommendations would look like
+
+Options:
+```bash
+serendipity profile build -q 6          # 6 questions per round
+serendipity profile build -o 6          # Up to 6 options per question
+serendipity profile build -t 20000      # More thinking tokens
+serendipity profile build --quiet       # Less verbose output
 ```
 
 Each profile has its own taste, history, and settings:

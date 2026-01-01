@@ -367,14 +367,52 @@ class TestMainCommand:
             yield storage, Path(tmpdir)
 
     def test_no_args_without_profile_shows_onboarding(self, temp_storage):
-        """Test that no args without profile shows onboarding."""
+        """Test that no args without profile shows onboarding tip."""
+        from serendipity.agent import DiscoveryResult
+
         storage, tmpdir = temp_storage
-        with patch("serendipity.cli.StorageManager") as mock_cls:
+
+        # Create output directory and mock HTML file
+        output_dir = tmpdir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "test.html").write_text("<html></html>")
+
+        mock_result = DiscoveryResult(
+            convergent=[],
+            divergent=[],
+            session_id="test-session",
+            cost_usd=0.0,
+            html_path=output_dir / "test.html",
+        )
+
+        with patch("serendipity.cli.StorageManager") as mock_cls, \
+             patch("serendipity.cli.SerendipityAgent") as mock_agent_cls, \
+             patch("serendipity.cli.ContextSourceManager") as mock_ctx_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, [])
+
+            # Mock agent
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = mock_result
+            mock_agent.output_dir = output_dir
+            mock_agent.render_json.return_value = '{"convergent": [], "divergent": []}'
+            mock_agent_cls.return_value = mock_agent
+
+            # Mock context manager
+            mock_ctx = MagicMock()
+            mock_ctx.get_enabled_source_names.return_value = []
+            mock_ctx.get_mcp_servers.return_value = {}
+            async def mock_init(*args, **kwargs):
+                return []
+            async def mock_build(*args, **kwargs):
+                return ("", [])
+            mock_ctx.initialize = mock_init
+            mock_ctx.build_context = mock_build
+            mock_ctx_cls.return_value = mock_ctx
+
+            result = runner.invoke(app, ["-o", "json", "--dest", "stdout"])
             assert result.exit_code == 0
-            # Should show onboarding since no taste profile exists
-            assert "profile taste" in result.stdout or "taste" in result.stdout.lower()
+            # Should show tip about taste profile
+            assert "taste" in result.stdout.lower()
 
     def test_help_flag(self):
         """Test --help flag."""
@@ -397,13 +435,51 @@ class TestSurpriseMeMode:
             yield storage, Path(tmpdir)
 
     def test_no_input_without_profile_shows_onboarding(self, temp_storage):
-        """Test that discover with no input and no profile shows onboarding."""
+        """Test that discover with no input and no profile shows onboarding tip."""
+        from serendipity.agent import DiscoveryResult
+
         storage, tmpdir = temp_storage
-        with patch("serendipity.cli.StorageManager") as mock_cls:
+
+        # Create output directory and mock HTML file
+        output_dir = tmpdir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "test.html").write_text("<html></html>")
+
+        mock_result = DiscoveryResult(
+            convergent=[],
+            divergent=[],
+            session_id="test-session",
+            cost_usd=0.0,
+            html_path=output_dir / "test.html",
+        )
+
+        with patch("serendipity.cli.StorageManager") as mock_cls, \
+             patch("serendipity.cli.SerendipityAgent") as mock_agent_cls, \
+             patch("serendipity.cli.ContextSourceManager") as mock_ctx_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["discover"])
+
+            # Mock agent
+            mock_agent = MagicMock()
+            mock_agent.run_sync.return_value = mock_result
+            mock_agent.output_dir = output_dir
+            mock_agent.render_json.return_value = '{"convergent": [], "divergent": []}'
+            mock_agent_cls.return_value = mock_agent
+
+            # Mock context manager
+            mock_ctx = MagicMock()
+            mock_ctx.get_enabled_source_names.return_value = []
+            mock_ctx.get_mcp_servers.return_value = {}
+            async def mock_init(*args, **kwargs):
+                return []
+            async def mock_build(*args, **kwargs):
+                return ("", [])
+            mock_ctx.initialize = mock_init
+            mock_ctx.build_context = mock_build
+            mock_ctx_cls.return_value = mock_ctx
+
+            result = runner.invoke(app, ["discover", "-o", "json", "--dest", "stdout"])
             assert result.exit_code == 0
-            # Should show onboarding
+            # Should show tip about taste profile
             assert "taste" in result.stdout.lower() or "profile" in result.stdout.lower()
 
 

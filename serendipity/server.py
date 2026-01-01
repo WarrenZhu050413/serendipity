@@ -408,9 +408,12 @@ class FeedbackServer:
                 headers=self._cors_headers(),
             )
 
-        if rec_type not in ("convergent", "divergent"):
+        # Validate type(s) - can be single or comma-separated
+        valid_types = {"convergent", "divergent"}
+        requested_types = set(rec_type.split(","))
+        if not requested_types.issubset(valid_types):
             return web.json_response(
-                {"error": "type must be 'convergent' or 'divergent'"},
+                {"error": "type must be 'convergent', 'divergent', or 'convergent,divergent'"},
                 status=400,
                 headers=self._cors_headers(),
             )
@@ -475,9 +478,12 @@ class FeedbackServer:
                 headers=self._cors_headers(),
             )
 
-        if rec_type not in ("convergent", "divergent"):
+        # Validate type(s) - can be single or comma-separated
+        valid_types = {"convergent", "divergent"}
+        requested_types = set(rec_type.split(","))
+        if not requested_types.issubset(valid_types):
             return web.json_response(
-                {"error": "type must be 'convergent' or 'divergent'"},
+                {"error": "type must be 'convergent', 'divergent', or 'convergent,divergent'"},
                 status=400,
                 headers=self._cors_headers(),
             )
@@ -502,6 +508,7 @@ class FeedbackServer:
         await response.prepare(request)
 
         try:
+            logger.info("Starting /more/stream handler", session_id=session_id, rec_type=rec_type)
             # Get the async generator from the callback
             async for event in self.on_more_stream_request(
                 session_id, rec_type, count, session_feedback, profile_diffs, custom_directives
@@ -511,8 +518,11 @@ class FeedbackServer:
                 await response.write(sse_data.encode("utf-8"))
                 # Flush to ensure immediate delivery
                 await response.drain()
+            logger.info("Completed /more/stream handler successfully")
 
         except Exception as e:
+            import traceback
+            logger.error("Exception in /more/stream handler", error=str(e), traceback=traceback.format_exc())
             # Send error event
             error_event = f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
             await response.write(error_event.encode("utf-8"))

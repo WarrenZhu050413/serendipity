@@ -1,3 +1,14 @@
+## Docs
+
+| Document | Description |
+|----------|-------------|
+| [docs/settings.md](docs/settings.md) | Settings reference and configuration |
+| [docs/extending-settings.md](docs/extending-settings.md) | Adding custom pairings and context sources |
+| [docs/icons.md](docs/icons.md) | Icon system and adding new icons |
+| [docs/architecture.md](docs/architecture.md) | System architecture overview |
+
+---
+
 ## CLI Design Principles
 
 The serendipity CLI follows these design principles:
@@ -54,6 +65,59 @@ Settings support dotted paths for granular access:
 ```
 serendipity settings get approaches.convergent
 serendipity settings edit media.youtube
+```
+
+### 9. Third-Party Asset Provenance
+All external assets (icons, fonts, etc.) MUST include source URL comments:
+```xml
+<!-- Lucide Icons - ISC License - https://unpkg.com/lucide-static@latest/icons/music.svg -->
+```
+
+### 10. UI State ↔ Settings Sync
+UI elements (sliders, toggles) must read from AND write to the same settings values. Never let UI state diverge from settings.
+
+### 11. Session Continuity
+Claude SDK sessions preserve context. Prompts for follow-up requests (e.g., "more recommendations") don't need to re-explain concepts—the model already has them.
+
+### 12. No Hardcoded Values in UI
+UI actions must read dynamic values from settings, not hardcode them:
+```javascript
+// Bad: requestMore('convergent', 5)
+// Good: requestMore(getEnabledApproaches(), getCountFromSlider())
+```
+
+### 13. Environment > Config > Defaults
+Precedence order for configuration values:
+1. Environment variables (e.g., `SERENDIPITY_PROFILE`)
+2. Config file (`settings.yaml`)
+3. Package defaults
+
+### 14. Deep Merge for Config Updates
+Partial settings updates use recursive merge, preserving unmodified nested values:
+```python
+# This updates only convergent.enabled, not the entire approaches section
+update_settings_yaml({"approaches": {"convergent": {"enabled": False}}})
+```
+
+### 15. Auto-Create User Resources from Defaults
+When user-customizable files (prompts, templates, styles) don't exist, auto-create from package defaults on first access. Users can immediately edit without manual setup.
+
+### 16. Backwards-Compatible Serialization
+`to_dict()`/`from_dict()` methods only include optional fields if present. `from_dict()` handles both old and new formats:
+```python
+# Only include if non-default
+if self.title:
+    d["title"] = self.title
+```
+
+### 17. ABC Plugin Architecture
+Extend via abstract base classes (`ContextSource`, `OutputDestination`). Optional features return sensible defaults (None, [], ""). Subclasses only override what they need.
+
+### 18. SSE Streaming via StatusEvent
+Real-time updates use async generators yielding `StatusEvent` objects:
+```python
+yield StatusEvent(event="status", data={"message": "..."})
+yield StatusEvent(event="complete", data={...})
 ```
 
 ---
@@ -215,17 +279,3 @@ Defined in `tests/conftest.py`:
 - `temp_dir` - Temporary directory
 - `temp_storage` - StorageManager with temp dir
 - `temp_storage_with_taste` - StorageManager with taste profile
-
----
-
-## Icon System
-
-Icons are auto-discovered from `serendipity/static/icons/`. **Single source of truth**: the SVG files.
-
-### Adding a New Icon
-
-1. Download SVG from [lucide.dev](https://lucide.dev/icons/)
-2. Save to `serendipity/static/icons/<name>.svg`
-3. Use in settings: `icon: "<name>"`
-
-That's it. No code changes needed.

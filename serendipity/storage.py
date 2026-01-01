@@ -435,16 +435,21 @@ class StorageManager:
         return TypesConfig.from_yaml(self.settings_path, variable_context=context)
 
     @property
+    def user_data_dir(self) -> Path:
+        """Directory for user-specific data (taste, history, learnings)."""
+        return self.base_dir / "user_data"
+
+    @property
     def history_path(self) -> Path:
-        return self.base_dir / "history.jsonl"
+        return self.user_data_dir / "history.jsonl"
 
     @property
     def learnings_path(self) -> Path:
-        return self.base_dir / "learnings.md"
+        return self.user_data_dir / "learnings.md"
 
     @property
     def taste_path(self) -> Path:
-        return self.base_dir / "taste.md"
+        return self.user_data_dir / "taste.md"
 
     @property
     def template_path(self) -> Path:
@@ -542,26 +547,48 @@ class StorageManager:
         """Ensure storage directories exist."""
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.user_data_dir.mkdir(parents=True, exist_ok=True)
 
     def migrate_if_needed(self) -> list[str]:
-        """Migrate old files to new names.
+        """Migrate old files to new locations/names.
 
         Returns:
             List of migration messages (empty if no migrations needed).
         """
         migrations = []
 
-        # Migrate preferences.md → taste.md
+        # Ensure user_data directory exists for migrations
+        self.user_data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Migrate user data files from root to user_data/
+        # taste.md → user_data/taste.md
+        old_taste = self.base_dir / "taste.md"
+        if old_taste.exists() and not self.taste_path.exists():
+            shutil.move(str(old_taste), str(self.taste_path))
+            migrations.append("Moved taste.md → user_data/taste.md")
+
+        # history.jsonl → user_data/history.jsonl
+        old_history = self.base_dir / "history.jsonl"
+        if old_history.exists() and not self.history_path.exists():
+            shutil.move(str(old_history), str(self.history_path))
+            migrations.append("Moved history.jsonl → user_data/history.jsonl")
+
+        # learnings.md → user_data/learnings.md
+        old_learnings = self.base_dir / "learnings.md"
+        if old_learnings.exists() and not self.learnings_path.exists():
+            shutil.move(str(old_learnings), str(self.learnings_path))
+            migrations.append("Moved learnings.md → user_data/learnings.md")
+
+        # Legacy migrations (preferences.md → taste.md, rules.md → learnings.md)
         old_prefs = self.base_dir / "preferences.md"
         if old_prefs.exists() and not self.taste_path.exists():
             shutil.move(str(old_prefs), str(self.taste_path))
-            migrations.append("Migrated preferences.md → taste.md")
+            migrations.append("Migrated preferences.md → user_data/taste.md")
 
-        # Migrate rules.md → learnings.md
         old_rules = self.base_dir / "rules.md"
         if old_rules.exists() and not self.learnings_path.exists():
             shutil.move(str(old_rules), str(self.learnings_path))
-            migrations.append("Migrated rules.md → learnings.md")
+            migrations.append("Migrated rules.md → user_data/learnings.md")
 
         # Migrate types.yaml → settings.yaml
         old_types = self.base_dir / "types.yaml"

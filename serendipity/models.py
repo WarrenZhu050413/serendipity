@@ -48,9 +48,11 @@ class Recommendation:
     @classmethod
     def from_dict(cls, data: dict, approach: str = "convergent") -> "Recommendation":
         """Create from dictionary, handling both simple and extended formats."""
+        # Handle "description" as fallback for "reason"
+        reason = data.get("reason") or data.get("description", "")
         return cls(
             url=data.get("url", ""),
-            reason=data.get("reason", ""),
+            reason=reason,
             approach=data.get("approach", approach),
             media_type=data.get("type", data.get("media_type", "article")),
             title=data.get("title"),
