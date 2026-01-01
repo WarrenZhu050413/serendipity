@@ -712,11 +712,13 @@ body {
 
 /* Directives Input */
 .directives-row {
+  display: flex;
+  gap: var(--space-sm);
   width: 100%;
 }
 
 .directives-input {
-  width: 100%;
+  flex: 1;
   padding: var(--space-sm) var(--space-md);
   font-family: var(--font-system);
   font-size: 0.85rem;
@@ -955,24 +957,66 @@ body {
   bottom: var(--space-lg);
   left: 50%;
   transform: translateX(-50%);
-  padding: var(--space-sm) var(--space-lg);
+  padding: var(--space-md) var(--space-xl);
   background: var(--header-bg);
   color: rgba(255, 255, 255, 0.9);
   font-size: 0.85rem;
   border-radius: var(--border-radius);
   display: none;
   z-index: 100;
+  text-align: center;
+  min-width: 280px;
 }
 
-.loading-hint.visible { display: block; }
+.loading-hint.visible { display: flex; flex-direction: column; align-items: center; gap: var(--space-sm); }
+
+.loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-text {
+  font-weight: 500;
+}
+
+.loading-details {
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+/* Panel Toggle Button */
+.toggle-btn {
+  margin-left: auto;
+  padding: var(--space-xs) var(--space-sm) !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  border: none !important;
+}
+
+.toggle-btn:hover {
+  color: var(--text-primary) !important;
+}
+
+.toggle-btn svg {
+  width: 16px;
+  height: 16px;
+}
 
 /* ========================================
    Pairings Section
    ======================================== */
 .pairings-section {
-  margin-top: var(--space-xl);
-  padding-top: var(--space-xl);
-  border-top: 2px solid var(--border-color);
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-lg);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .pairings-title {
