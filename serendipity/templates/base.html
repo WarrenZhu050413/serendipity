@@ -1013,6 +1013,11 @@ Customize styling with: serendipity settings style --edit
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // Expose functions needed by inline onclick handlers
+        window.requestMore = requestMore;
+        window.toggleSource = toggleSource;
+        window.recordFeedback = recordFeedback;
     </script>
 </body>
 </html>
