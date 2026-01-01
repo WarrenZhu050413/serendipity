@@ -839,52 +839,61 @@ body {
   justify-content: space-between;
 }
 
-/* Directives Input */
+/* Directives Input - Connected input + button style */
 .directives-row {
   display: flex;
-  gap: var(--space-sm);
-  width: 100%;
+  align-items: stretch;
 }
 
 .directives-input {
   flex: 1;
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-md) var(--space-lg);
   font-family: var(--font-system);
-  font-size: 0.85rem;
+  font-size: 1rem;
   color: var(--text-primary);
-  background: var(--bg-input);
+  background: var(--bg-panel);
   border: 1px solid var(--border-color);
-  border-radius: var(--border-radius);
+  border-right: none;
+  border-radius: var(--border-radius) 0 0 var(--border-radius);
+  min-height: 50px;
+  transition: all var(--transition-fast);
 }
 
 .directives-input:focus {
   outline: none;
   border-color: var(--accent-2);
+  z-index: 1;
 }
 
 .directives-input::placeholder {
   color: var(--text-muted);
-  font-style: italic;
+}
+
+/* Focus state shows connected border */
+.directives-input:focus + .round-btn {
+  border-color: var(--accent-2);
+  border-left-color: var(--header-bg);
 }
 
 .round-btn {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
   font-family: var(--font-system);
   font-size: 0.9rem;
   font-weight: 500;
   background: var(--header-bg);
   color: #ffffff;
-  border: none;
-  border-radius: var(--border-radius);
+  border: 1px solid var(--header-bg);
+  border-radius: 0 var(--border-radius) var(--border-radius) 0;
   cursor: pointer;
+  white-space: nowrap;
   transition: all var(--transition-fast);
 }
 
 .round-btn:hover {
-  opacity: 0.9;
+  filter: brightness(1.1);
 }
 
 .round-btn:disabled {
@@ -895,6 +904,34 @@ body {
 .round-btn svg {
   width: 16px;
   height: 16px;
+}
+
+/* Filter Row - positioned below directives, above content */
+.filter-row {
+  margin-bottom: var(--space-lg);
+}
+
+.content-filter {
+  width: 300px;
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--font-system);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent-2);
+  border-radius: var(--border-radius);
+  transition: all var(--transition-fast);
+}
+
+.content-filter:focus {
+  outline: none;
+  border-color: var(--accent-2);
+  border-left-width: 3px;
+}
+
+.content-filter::placeholder {
+  color: var(--text-muted);
 }
 
 .stats-bar {
@@ -936,41 +973,7 @@ body {
 
 .history-icon.disliked { color: var(--error-color); }
 
-/* Card Search Bar */
-.search-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  margin-left: auto;
-}
-
-.search-bar input {
-  padding: var(--space-xs) var(--space-sm);
-  font-family: var(--font-system);
-  font-size: 0.8rem;
-  color: var(--text-primary);
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius);
-  width: 160px;
-  transition: all var(--transition-fast);
-}
-
-.search-bar input:focus {
-  outline: none;
-  border-color: var(--accent-2);
-  width: 200px;
-}
-
-.search-bar input::placeholder {
-  color: var(--text-muted);
-}
-
-.search-results {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  min-width: 40px;
-}
+/* Card Search Bar - DEPRECATED, now using .filter-row / .content-filter */
 
 /* ========================================
    Search History (SSE tool_use log)
@@ -1102,15 +1105,52 @@ body {
   box-shadow: 0 0 0 1px rgba(123, 163, 163, 0.4), 0 2px 8px rgba(123, 163, 163, 0.1);
 }
 
-/* Card Feedback - TOP RIGHT */
+/* Card Rating - TOP RIGHT (Likert scale: 1, 2, 4, 5 stars) */
 .card-feedback {
   position: absolute;
   top: var(--space-sm);
   right: var(--space-sm);
   display: flex;
-  gap: var(--space-xs);
+  gap: 2px;
 }
 
+/* Goodreads-style 5-star rating */
+.card-feedback.star-rating {
+  gap: 2px;
+  align-items: center;
+}
+
+.star-rating .star {
+  cursor: pointer;
+  color: var(--text-muted);
+  opacity: 0.4;
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  padding: 2px;
+}
+
+.star-rating .star:hover {
+  opacity: 1;
+}
+
+/* Filled stars (selected rating) */
+.star-rating .star.filled {
+  color: #f1c40f;
+  opacity: 1;
+}
+
+/* Preview stars (hover) */
+.star-rating .star.preview {
+  color: #f1c40f;
+  opacity: 0.7;
+}
+
+.star-rating .star svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Legacy feedback-btn styles for backward compatibility */
 .feedback-btn {
   width: 28px;
   height: 28px;
@@ -1197,6 +1237,20 @@ body {
 }
 
 .card-title a:hover {
+  text-decoration: underline;
+}
+
+.card-url {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  margin-bottom: var(--space-xs);
+  opacity: 0.7;
+}
+
+.card-url:hover {
+  opacity: 1;
   text-decoration: underline;
 }
 
@@ -1415,6 +1469,73 @@ body {
   color: var(--text-muted);
   font-size: 0.8rem;
   margin-left: auto;
+}
+
+/* ========================================
+   Batch Containers (for Another Round)
+   ======================================== */
+.batch-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-bottom: var(--space-xl);
+  padding-bottom: var(--space-lg);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.batch-container:last-child {
+  border-bottom: none;
+}
+
+.batch-container.new-batch {
+  animation: batchFadeIn 0.4s ease-out;
+}
+
+@keyframes batchFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.batch-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+}
+
+.batch-pairings {
+  display: flex;
+  gap: var(--space-md);
+  overflow-x: auto;
+  padding: var(--space-sm) 0;
+  scrollbar-width: thin;
+}
+
+.batch-pairings::-webkit-scrollbar {
+  height: 6px;
+}
+
+.batch-pairings::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.batch-pairings .pairing-card {
+  flex: 0 0 auto;
+  min-width: 280px;
+  max-width: 320px;
+}
+
+.batch-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-md);
 }
 
 /* ========================================

@@ -7,8 +7,7 @@ Left panel with Profile/Settings tabs, dark mode support, API integration.
 PLACEHOLDERS (automatically replaced by Python):
 - {css} - CSS from ~/.serendipity/style.css
 - {icons_json} - Auto-discovered SVG icons from static/icons/
-- {recommendations_html} - All recommendation cards
-- {pairings_html} - Contextual pairing suggestions
+- {initial_batch_html} - Initial batch container (title + pairings + cards)
 - {session_id} - The current session ID
 - {server_port} - The feedback server port
 
@@ -252,13 +251,9 @@ Customize styling with: serendipity settings style --edit
                         <div class="stat">Shown: <span id="stat-shown">0</span></div>
                         <div class="stat liked"><svg class="stat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg><span id="stat-liked">0</span></div>
                         <div class="stat disliked"><svg class="stat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg><span id="stat-disliked">0</span></div>
-                        <div class="search-bar">
-                            <input type="text" id="card-search" placeholder="🔍 Filter cards..." oninput="filterCards()">
-                            <span class="search-results" id="search-results"></span>
-                        </div>
                     </div>
                     <div class="directives-row">
-                        <input type="text" class="directives-input" id="directives-input" placeholder="Custom directives (e.g., 'more philosophy', 'avoid podcasts') - Press Enter to load more">
+                        <input type="text" class="directives-input" id="directives-input" placeholder="More philosophy, avoid podcasts, shorter reads...">
                         <button class="round-btn" id="generate-btn" onclick="requestMoreAll()">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="23 4 23 10 17 10"></polyline>
@@ -267,6 +262,11 @@ Customize styling with: serendipity settings style --edit
                             Another Round
                         </button>
                     </div>
+                </div>
+
+                <!-- Filter row (below directives, above content) -->
+                <div class="filter-row">
+                    <input type="text" class="content-filter" id="card-search" placeholder="Filter..." oninput="filterCards()">
                 </div>
 
                 <!-- Search History (expandable, shows during Another Round) -->
@@ -281,12 +281,9 @@ Customize styling with: serendipity settings style --edit
                     </div>
                 </div>
 
-                <!-- Pairings Section (at top, no scrolling needed) -->
-{pairings_html}
-
-                <!-- Discovery Grid -->
+                <!-- Discovery Grid (batch containers with title + pairings + cards) -->
                 <div class="discovery-grid" id="recommendations">
-{recommendations_html}
+{initial_batch_html}
                 </div>
             </main>
         </div>
@@ -828,11 +825,34 @@ Customize styling with: serendipity settings style --edit
         }
 
         // =============================================================
-        // FEEDBACK
+        // RATING (Goodreads-style 5-star rating)
         // =============================================================
-        async function feedback(button, rating) {
-            const card = button.closest('.discovery-card');
+
+        // Preview rating on hover (fill stars up to hovered star)
+        function previewRating(star, rating) {
+            const container = star.closest('.star-rating');
+            const stars = container.querySelectorAll('.star');
+            stars.forEach((s, i) => {
+                s.classList.toggle('preview', i < rating);
+            });
+        }
+
+        // Clear preview on mouseout (restore to actual rating)
+        function clearPreview(star) {
+            const container = star.closest('.star-rating');
+            const currentRating = parseInt(container.dataset.rating) || 0;
+            const stars = container.querySelectorAll('.star');
+            stars.forEach((s, i) => {
+                s.classList.remove('preview');
+                s.classList.toggle('filled', i < currentRating);
+            });
+        }
+
+        // Set and save rating
+        async function setRating(star, rating) {
+            const card = star.closest('.discovery-card');
             const url = card.dataset.url;
+            const container = star.closest('.star-rating');
 
             try {
                 const response = await fetch(`${API_BASE}/feedback`, {
@@ -841,36 +861,47 @@ Customize styling with: serendipity settings style --edit
                     body: JSON.stringify({
                         url: url,
                         session_id: SESSION_ID,
-                        feedback: rating
+                        rating: rating
                     })
                 });
 
                 if (response.ok) {
-                    const buttons = card.querySelectorAll('.feedback-btn');
-                    buttons.forEach(btn => {
-                        btn.classList.remove('active');
+                    // Update star states
+                    container.dataset.rating = rating;
+                    const stars = container.querySelectorAll('.star');
+                    stars.forEach((s, i) => {
+                        s.classList.remove('preview');
+                        s.classList.toggle('filled', i < rating);
                     });
-                    button.classList.add('active');
 
-                    // Track feedback
+                    // Track rating change for stats
                     const existingIdx = sessionFeedback.findIndex(f => f.url === url);
                     if (existingIdx >= 0) {
-                        const oldFeedback = sessionFeedback[existingIdx].feedback;
-                        if (oldFeedback === 'liked') statsLiked--;
-                        else if (oldFeedback === 'disliked') statsDisliked--;
+                        const oldRating = sessionFeedback[existingIdx].rating;
+                        // Decrement old category
+                        if (oldRating >= 4) statsLiked--;
+                        else if (oldRating <= 2) statsDisliked--;
                         sessionFeedback.splice(existingIdx, 1);
                     }
 
-                    sessionFeedback.push({ url, feedback: rating });
+                    // Add new rating
+                    sessionFeedback.push({ url, rating: rating });
 
-                    if (rating === 'liked') statsLiked++;
-                    else if (rating === 'disliked') statsDisliked++;
+                    // Increment new category (3 is neutral, doesn't count)
+                    if (rating >= 4) statsLiked++;
+                    else if (rating <= 2) statsDisliked++;
                     updateStats();
                 }
             } catch (e) {
-                console.error('Feedback error:', e);
-                alert('Could not save feedback. Is the server still running?');
+                console.error('Rating error:', e);
+                alert('Could not save rating. Is the server still running?');
             }
+        }
+
+        // Backward-compatible feedback function (maps to ratings)
+        async function feedback(button, feedbackType) {
+            const rating = feedbackType === 'liked' ? 4 : 2;
+            return setRating(button, rating);
         }
 
         // =============================================================
@@ -949,23 +980,9 @@ Customize styling with: serendipity settings style --edit
                 case 'complete':
                     // Handle completed recommendations
                     if (data.success && data.recommendations && data.recommendations.length > 0) {
-                        // Render batch title divider if present
-                        if (data.batch_title) {
-                            renderBatchTitle(data.batch_title);
-                        }
-
-                        // Render pairings if present
-                        if (data.pairings && data.pairings.length > 0) {
-                            renderNewPairings(data.pairings);
-                        }
-
-                        // Reverse so newest appears first when prepending
-                        const recs = [...data.recommendations].reverse();
-                        recs.forEach((rec, idx) => {
-                            const card = createCard(rec, recType, idx, true);
-                            grid.prepend(card);
-                            statsShown++;
-                        });
+                        // Render complete batch: title + pairings + cards
+                        renderBatch(data.batch_title, data.pairings, data.recommendations);
+                        statsShown += data.recommendations.length;
                         updateStats();
                         loadingDetails.textContent = `Found ${data.recommendations.length} recommendations!`;
                     } else {
@@ -1005,11 +1022,6 @@ Customize styling with: serendipity settings style --edit
             const feedbackCount = sessionFeedback.length;
             loadingText.textContent = `Getting ${type} recommendations...`;
             loadingDetails.textContent = 'Connecting...';
-
-            // Remove "new-batch" class from previous batch
-            document.querySelectorAll('.discovery-card.new-batch').forEach(card => {
-                card.classList.remove('new-batch');
-            });
 
             // Increment batch ID
             currentBatchId++;
@@ -1111,11 +1123,28 @@ Customize styling with: serendipity settings style --edit
             }
             card.className = className;
             card.dataset.url = rec.url;
-            card.dataset.approach = approach;
-            card.dataset.media = rec.type || 'article';
+            // Use rec.approach if available (from get_more_stream), otherwise use approach param
+            const actualApproach = rec.approach || approach;
+            card.dataset.approach = actualApproach;
+            card.dataset.media = rec.media_type || rec.type || 'article';
 
-            const approachLabel = approach === 'convergent' ? 'Convergent' : 'Divergent';
-            const mediaLabel = rec.type ? rec.type.charAt(0).toUpperCase() + rec.type.slice(1) : 'Article';
+            const approachLabel = actualApproach === 'convergent' ? 'Convergent' : 'Divergent';
+            const mediaType = rec.media_type || rec.type || 'article';
+            const mediaLabel = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
+
+            // Extract domain from URL for display
+            let domain = rec.url;
+            try {
+                const url = new URL(rec.url);
+                domain = url.hostname.replace('www.', '');
+            } catch (e) {
+                domain = rec.url.slice(0, 50);
+            }
+
+            // Title and URL HTML
+            const title = rec.title || domain;
+            const titleHtml = `<a href="${escapeHtml(rec.url)}" target="_blank" class="card-title-link">${escapeHtml(title)}</a>`;
+            const urlHtml = rec.title ? `<a href="${escapeHtml(rec.url)}" target="_blank" class="card-url">${escapeHtml(domain)}</a>` : '';
 
             let metaHtml = '';
             if (rec.metadata) {
@@ -1127,22 +1156,20 @@ Customize styling with: serendipity settings style --edit
             }
 
             card.innerHTML = `
-                <div class="card-feedback">
-                    <button class="feedback-btn like" title="Like" onclick="feedback(this, 'liked')">
-                        ${getIcon('thumbs-up', '', 24)}
-                    </button>
-                    <button class="feedback-btn dislike" title="Dislike" onclick="feedback(this, 'disliked')">
-                        ${getIcon('thumbs-down', '', 24)}
-                    </button>
+                <div class="card-feedback star-rating" data-rating="0">
+                    <span class="star" data-value="1" title="1 star" onmouseover="previewRating(this, 1)" onmouseout="clearPreview(this)" onclick="setRating(this, 1)">${getIcon('star', '', 18)}</span>
+                    <span class="star" data-value="2" title="2 stars" onmouseover="previewRating(this, 2)" onmouseout="clearPreview(this)" onclick="setRating(this, 2)">${getIcon('star', '', 18)}</span>
+                    <span class="star" data-value="3" title="3 stars" onmouseover="previewRating(this, 3)" onmouseout="clearPreview(this)" onclick="setRating(this, 3)">${getIcon('star', '', 18)}</span>
+                    <span class="star" data-value="4" title="4 stars" onmouseover="previewRating(this, 4)" onmouseout="clearPreview(this)" onclick="setRating(this, 4)">${getIcon('star', '', 18)}</span>
+                    <span class="star" data-value="5" title="5 stars" onmouseover="previewRating(this, 5)" onmouseout="clearPreview(this)" onclick="setRating(this, 5)">${getIcon('star', '', 18)}</span>
                 </div>
                 <div class="card-body">
                     <div class="card-tags">
                         <span class="card-tag approach">${approachLabel}</span>
                         <span class="card-tag media">${mediaLabel}</span>
                     </div>
-                    <h3 class="card-title">
-                        <a href="${escapeHtml(rec.url)}" target="_blank">${escapeHtml(rec.title || rec.url)}</a>
-                    </h3>
+                    <h3 class="card-title">${titleHtml}</h3>
+                    ${urlHtml}
                     ${metaHtml}
                     <p class="card-description">${escapeHtml(rec.reason)}</p>
                 </div>
@@ -1170,6 +1197,80 @@ Customize styling with: serendipity settings style --edit
                 <span class="batch-time">${new Date().toLocaleTimeString()}</span>
             `;
             grid.prepend(divider);
+        }
+
+        // Create a single pairing card element
+        function createPairingCard(p, isNew = true) {
+            const card = document.createElement('article');
+            const pType = p.type || 'tip';
+            card.className = `pairing-card pairing-${pType}${isNew ? ' new-pairing' : ''}`;
+            const iconHtml = getIcon(pType, 'pairing-icon-svg', 24, 1.5);
+            const typeLabel = pType.charAt(0).toUpperCase() + pType.slice(1);
+
+            let linkHtml = '';
+            if (p.url) {
+                const title = p.title || p.url;
+                linkHtml = `<a href="${escapeHtml(p.url)}" target="_blank" rel="noopener" class="pairing-link">${escapeHtml(title)}</a>`;
+            }
+
+            card.innerHTML = `
+                <div class="pairing-icon">${iconHtml}</div>
+                <div class="pairing-body">
+                    <span class="pairing-type">${typeLabel}</span>
+                    <p class="pairing-content">${escapeHtml(p.content || '')}</p>
+                    ${linkHtml}
+                </div>
+            `;
+            return card;
+        }
+
+        // Render a complete batch with title, pairings, and cards
+        function renderBatch(batchTitle, pairings, recommendations) {
+            const mainContainer = document.getElementById('recommendations');
+
+            // Remove new-batch class from any previous batch
+            document.querySelectorAll('.batch-container.new-batch').forEach(el => {
+                el.classList.remove('new-batch');
+            });
+
+            // Create batch container
+            const batchContainer = document.createElement('div');
+            batchContainer.className = 'batch-container new-batch';
+
+            // 1. Batch header with title
+            if (batchTitle) {
+                const headerEl = document.createElement('div');
+                headerEl.className = 'batch-header';
+                headerEl.innerHTML = `
+                    <span class="batch-title">${escapeHtml(batchTitle)}</span>
+                    <span class="batch-time">${new Date().toLocaleTimeString()}</span>
+                `;
+                batchContainer.appendChild(headerEl);
+            }
+
+            // 2. Pairings row (for THIS batch)
+            if (pairings && pairings.length > 0) {
+                const pairingsRow = document.createElement('div');
+                pairingsRow.className = 'batch-pairings';
+                pairings.forEach(p => {
+                    pairingsRow.appendChild(createPairingCard(p, true));
+                });
+                batchContainer.appendChild(pairingsRow);
+            }
+
+            // 3. Cards grid (for THIS batch)
+            if (recommendations && recommendations.length > 0) {
+                const cardsGrid = document.createElement('div');
+                cardsGrid.className = 'batch-cards';
+                recommendations.forEach((rec, idx) => {
+                    const card = createCard(rec, rec.type || 'convergent', idx, true);
+                    cardsGrid.appendChild(card);
+                });
+                batchContainer.appendChild(cardsGrid);
+            }
+
+            // Prepend batch to main container
+            mainContainer.prepend(batchContainer);
         }
 
         function renderNewPairings(pairings) {
