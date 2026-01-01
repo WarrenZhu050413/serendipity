@@ -14,7 +14,7 @@ runner = CliRunner()
 
 
 class TestLearningsCommand:
-    """Tests for the learnings command (via profile get learnings)."""
+    """Tests for the learnings command (via profile manage learnings)."""
 
     @pytest.fixture
     def temp_storage(self):
@@ -32,7 +32,7 @@ class TestLearningsCommand:
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "learnings"])
+            result = runner.invoke(app, ["profile", "manage", "learnings"])
             assert result.exit_code == 0
             assert "No learnings yet" in result.stdout
 
@@ -43,7 +43,7 @@ class TestLearningsCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "learnings"])
+            result = runner.invoke(app, ["profile", "manage", "learnings"])
             assert result.exit_code == 0
             assert "Test Learning" in result.stdout
 
@@ -54,7 +54,7 @@ class TestLearningsCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "learnings", "--clear"], input="n\n")
+            result = runner.invoke(app, ["profile", "manage", "learnings", "--clear"], input="n\n")
             assert result.exit_code == 0
             assert "Cancelled" in result.stdout
             # Learning should still exist
@@ -67,22 +67,22 @@ class TestLearningsCommand:
 
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "learnings", "--clear"], input="y\n")
+            result = runner.invoke(app, ["profile", "manage", "learnings", "--clear"], input="y\n")
             assert result.exit_code == 0
             assert "cleared" in result.stdout.lower()
             # Learning should be gone
             assert storage.load_learnings() == ""
 
     def test_learnings_help(self):
-        """Test profile get command help (includes learnings options)."""
-        result = runner.invoke(app, ["profile", "get", "--help"])
+        """Test profile manage command help (includes learnings options)."""
+        result = runner.invoke(app, ["profile", "manage", "--help"])
         assert result.exit_code == 0
         assert "interactive" in result.stdout.lower()
         assert "clear" in result.stdout.lower()
 
 
 class TestHistoryCommand:
-    """Tests for the history command (via profile get history)."""
+    """Tests for the history command (via profile manage history)."""
 
     @pytest.fixture
     def temp_storage_with_history(self):
@@ -119,7 +119,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "history"])
+            result = runner.invoke(app, ["profile", "manage", "history"])
             assert result.exit_code == 0
             assert "example1.com" in result.stdout
             assert "example2.com" in result.stdout
@@ -129,7 +129,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "history", "--liked"])
+            result = runner.invoke(app, ["profile", "manage", "history", "--liked"])
             assert result.exit_code == 0
             assert "example1.com" in result.stdout
             assert "example2.com" not in result.stdout
@@ -139,7 +139,7 @@ class TestHistoryCommand:
         storage, tmpdir = temp_storage_with_history
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "history", "--disliked"])
+            result = runner.invoke(app, ["profile", "manage", "history", "--disliked"])
             assert result.exit_code == 0
             assert "example1.com" not in result.stdout
             assert "example2.com" in result.stdout
@@ -261,7 +261,7 @@ class TestSettingsCommand:
 
 
 class TestTasteCommand:
-    """Tests for the taste command (via profile get taste)."""
+    """Tests for the taste command (via profile manage taste)."""
 
     @pytest.fixture
     def temp_storage(self):
@@ -279,7 +279,7 @@ class TestTasteCommand:
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
-            result = runner.invoke(app, ["profile", "get", "taste"])
+            result = runner.invoke(app, ["profile", "manage", "taste"])
             assert result.exit_code == 0
             # Shows "file not found" or empty message
             assert result.exit_code == 0
@@ -295,7 +295,7 @@ class TestTasteCommand:
             # Also patch is_source_editable to return the temp path
             with patch("serendipity.cli.is_source_editable") as mock_editable:
                 mock_editable.return_value = (True, storage.taste_path)
-                result = runner.invoke(app, ["profile", "get", "taste"])
+                result = runner.invoke(app, ["profile", "manage", "taste"])
                 assert result.exit_code == 0
                 assert "minimalism" in result.stdout
 
@@ -520,10 +520,10 @@ class TestCLIIntegration:
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
 
-            # Check profile help - now shows generic get/edit commands
+            # Check profile help - now shows generic manage/edit commands
             result = runner.invoke(app, ["profile", "--help"])
             assert result.exit_code == 0
-            assert "get" in result.stdout
+            assert "manage" in result.stdout
             assert "edit" in result.stdout
 
     def test_settings_and_profile_source_sync(self, temp_storage):
@@ -543,6 +543,390 @@ class TestCLIIntegration:
             # Check it's enabled
             config = TypesConfig.from_yaml(storage.settings_path)
             assert config.context_sources["whorl"].enabled is True
+
+
+class TestProfileManagementCommands:
+    """Tests for profile management commands (list, create, use, delete, rename, export, import)."""
+
+    @pytest.fixture
+    def temp_root(self):
+        """Create a temporary root directory for ProfileManager."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            yield root
+
+    def test_profile_list(self, temp_root):
+        """Test listing profiles."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "list"])
+            assert result.exit_code == 0
+            assert "default" in result.stdout
+            assert "work" in result.stdout
+            assert "*" in result.stdout  # Active marker
+
+    def test_profile_list_shows_env_var(self, temp_root):
+        """Test that env var override is shown."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls, \
+             patch.dict("os.environ", {"SERENDIPITY_PROFILE": "work"}):
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "list"])
+            assert result.exit_code == 0
+            assert "SERENDIPITY_PROFILE" in result.stdout
+
+    def test_profile_create(self, temp_root):
+        """Test creating a new profile."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "create", "work"])
+            assert result.exit_code == 0
+            assert "Created profile" in result.stdout
+            assert "work" in result.stdout
+
+        # Verify profile was created
+        assert pm.profile_exists("work")
+
+    def test_profile_create_from_existing(self, temp_root):
+        """Test creating a profile from an existing one."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        # Add some content to default
+        (pm.get_profile_path("default") / "taste.md").write_text("# My Taste")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "create", "work", "--from", "default"])
+            assert result.exit_code == 0
+            assert "copied from" in result.stdout
+
+        # Verify content was copied
+        assert (pm.get_profile_path("work") / "taste.md").read_text() == "# My Taste"
+
+    def test_profile_create_duplicate_fails(self, temp_root):
+        """Test that creating a duplicate profile fails."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "create", "work"])
+            assert result.exit_code == 1
+            assert "already exists" in result.stdout
+
+    def test_profile_use(self, temp_root):
+        """Test switching to a different profile."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "use", "work"])
+            assert result.exit_code == 0
+            assert "Switched to profile" in result.stdout
+            assert "work" in result.stdout
+
+        # Verify active profile changed
+        assert pm.get_active_profile() == "work"
+
+    def test_profile_use_nonexistent_fails(self, temp_root):
+        """Test that switching to a nonexistent profile fails."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "use", "nonexistent"])
+            assert result.exit_code == 1
+            assert "does not exist" in result.stdout
+
+    def test_profile_delete_with_confirmation(self, temp_root):
+        """Test deleting a profile with confirmation."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "delete", "work"], input="y\n")
+            assert result.exit_code == 0
+            assert "Deleted profile" in result.stdout
+
+        assert not pm.profile_exists("work")
+
+    def test_profile_delete_cancelled(self, temp_root):
+        """Test cancelling profile deletion."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "delete", "work"], input="n\n")
+            assert result.exit_code == 0
+            assert "Cancelled" in result.stdout
+
+        # Profile should still exist
+        assert pm.profile_exists("work")
+
+    def test_profile_delete_force(self, temp_root):
+        """Test force deleting a profile without confirmation."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "delete", "work", "--force"])
+            assert result.exit_code == 0
+            assert "Deleted profile" in result.stdout
+
+        assert not pm.profile_exists("work")
+
+    def test_profile_delete_active_fails(self, temp_root):
+        """Test that deleting the active profile fails."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.set_active_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "delete", "default", "--force"])
+            assert result.exit_code == 1
+            assert "active profile" in result.stdout.lower()
+
+    def test_profile_delete_nonexistent_fails(self, temp_root):
+        """Test that deleting a nonexistent profile fails."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "delete", "nonexistent", "--force"])
+            assert result.exit_code == 1
+            assert "does not exist" in result.stdout
+
+    def test_profile_rename(self, temp_root):
+        """Test renaming a profile."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "rename", "work", "business"])
+            assert result.exit_code == 0
+            assert "Renamed" in result.stdout
+            assert "work" in result.stdout
+            assert "business" in result.stdout
+
+        assert not pm.profile_exists("work")
+        assert pm.profile_exists("business")
+
+    def test_profile_rename_nonexistent_fails(self, temp_root):
+        """Test that renaming a nonexistent profile fails."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "rename", "nonexistent", "new"])
+            assert result.exit_code == 1
+            assert "does not exist" in result.stdout
+
+    def test_profile_rename_to_existing_fails(self, temp_root):
+        """Test that renaming to an existing profile name fails."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("work")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "rename", "work", "default"])
+            assert result.exit_code == 1
+            assert "already exists" in result.stdout
+
+    def test_profile_export(self, temp_root):
+        """Test exporting a profile."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        (pm.get_profile_path("default") / "taste.md").write_text("# My Taste")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "export", "default"])
+            assert result.exit_code == 0
+            assert "Exported" in result.stdout
+
+        # Check archive was created
+        archive_path = Path.cwd() / "default.tar.gz"
+        assert archive_path.exists()
+        archive_path.unlink()  # Cleanup
+
+    def test_profile_export_active_default(self, temp_root):
+        """Test that export defaults to active profile."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("myprofile")
+        pm.set_active_profile("myprofile")
+        (pm.get_profile_path("myprofile") / "taste.md").write_text("# My Taste")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "export"])
+            assert result.exit_code == 0
+            assert "myprofile" in result.stdout
+
+        # Cleanup
+        archive_path = Path.cwd() / "myprofile.tar.gz"
+        if archive_path.exists():
+            archive_path.unlink()
+
+    def test_profile_export_custom_output(self, temp_root):
+        """Test exporting to a custom output path."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        (pm.get_profile_path("default") / "taste.md").write_text("# My Taste")
+
+        output_path = temp_root / "backup.tar.gz"
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "export", "default", "-o", str(output_path)])
+            assert result.exit_code == 0
+            assert "Exported" in result.stdout
+
+        assert output_path.exists()
+
+    def test_profile_import(self, temp_root):
+        """Test importing a profile."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        pm.create_profile("other")
+        (pm.get_profile_path("default") / "taste.md").write_text("# My Taste")
+
+        # Export first
+        archive_path = pm.export_profile("default")
+
+        # Delete the profile (switch to other first)
+        pm.set_active_profile("other")
+        pm.delete_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "import", str(archive_path)])
+            assert result.exit_code == 0
+            assert "Imported" in result.stdout
+
+        assert pm.profile_exists("default")
+        archive_path.unlink()  # Cleanup
+
+    def test_profile_import_with_new_name(self, temp_root):
+        """Test importing a profile with a new name."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+        (pm.get_profile_path("default") / "taste.md").write_text("# My Taste")
+
+        # Export first
+        archive_path = pm.export_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "import", str(archive_path), "--as", "imported"])
+            assert result.exit_code == 0
+            assert "imported" in result.stdout
+
+        assert pm.profile_exists("imported")
+        archive_path.unlink()  # Cleanup
+
+    def test_profile_import_nonexistent_fails(self, temp_root):
+        """Test that importing a nonexistent archive fails."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+        pm.create_profile("default")
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls:
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "import", "/nonexistent/path.tar.gz"])
+            assert result.exit_code == 1
+
+    def test_profile_create_help_shows_interactive(self, temp_root):
+        """Test that --help shows the interactive flag."""
+        result = runner.invoke(app, ["profile", "create", "--help"])
+        assert result.exit_code == 0
+        assert "--interactive" in result.stdout
+        assert "-i" in result.stdout
+        assert "wizard" in result.stdout.lower()
+
+    def test_profile_create_interactive(self, temp_root):
+        """Test creating a profile with interactive flag."""
+        from serendipity.storage import ProfileManager
+
+        pm = ProfileManager(root_dir=temp_root)
+
+        with patch("serendipity.cli.ProfileManager") as mock_cls, \
+             patch("serendipity.cli._profile_interactive_wizard") as mock_wizard, \
+             patch("serendipity.cli.StorageManager"):
+            mock_cls.return_value = pm
+            result = runner.invoke(app, ["profile", "create", "work", "-i"])
+            assert result.exit_code == 0
+            assert "Created profile" in result.stdout
+            assert "Switched to profile" in result.stdout
+            # Verify wizard was called
+            mock_wizard.assert_called_once()
+
+        # Verify profile was created and is now active
+        assert pm.profile_exists("work")
+        assert pm.get_active_profile() == "work"
 
 
 class TestSettingsAddCommand:
