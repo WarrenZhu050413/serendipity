@@ -33,7 +33,9 @@ from serendipity.storage import HistoryEntry, ProfileManager, StorageManager
 
 app = typer.Typer(
     name="serendipity",
-    help="Personal Serendipity Engine - discover convergent and divergent content recommendations",
+    help="Personal Serendipity Engine - discover convergent and divergent content recommendations.\n\n"
+    "Options below pass through to [bold]discover[/bold]. "
+    "See [dim]serendipity discover --help[/dim] for file/stdin input.",
     add_completion=True,
     no_args_is_help=False,
     rich_markup_mode="rich",
@@ -63,21 +65,83 @@ console = Console()
 
 
 @app.callback()
-def callback(ctx: typer.Context) -> None:
+def callback(
+    ctx: typer.Context,
+    paste: bool = typer.Option(
+        False,
+        "--paste",
+        "-p",
+        help="Read context from clipboard",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Open $EDITOR to compose context",
+    ),
+    model: str = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Claude model (haiku, sonnet, opus)",
+    ),
+    output_format: str = typer.Option(
+        "html",
+        "--output-format",
+        "-o",
+        help="Output format: html, terminal, json",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed progress",
+    ),
+    enable_source: Optional[list[str]] = typer.Option(
+        None,
+        "--enable-source",
+        "-s",
+        help="Enable a context source for this run",
+    ),
+    disable_source: Optional[list[str]] = typer.Option(
+        None,
+        "--disable-source",
+        "-d",
+        help="Disable a context source for this run",
+    ),
+    thinking: Optional[int] = typer.Option(
+        None,
+        "--thinking",
+        "-t",
+        help="Enable extended thinking with specified token budget",
+    ),
+    count: Optional[int] = typer.Option(
+        None,
+        "--count",
+        "-n",
+        help="Number of recommendations to generate",
+    ),
+    port: Optional[int] = typer.Option(
+        None,
+        "--port",
+        help="Port for feedback server",
+    ),
+) -> None:
     """Personal Serendipity Engine - discover convergent and divergent content recommendations."""
-    # If no subcommand was invoked, run discover with defaults ("surprise me" mode)
+    # If no subcommand was invoked, run discover with the provided options
     if ctx.invoked_subcommand is None:
-        # Call discover_cmd directly with default values
         discover_cmd(
             file_path=None,
-            paste=False,
-            interactive=False,
-            model=None,
-            output_format="html",
-            verbose=False,
-            enable_source=None,
-            disable_source=None,
-            thinking=None,
+            paste=paste,
+            interactive=interactive,
+            model=model,
+            output_format=output_format,
+            verbose=verbose,
+            enable_source=enable_source,
+            disable_source=disable_source,
+            thinking=thinking,
+            count=count,
+            port=port,
         )
 
 
@@ -87,14 +151,7 @@ def profile_callback(
     show: bool = typer.Option(
         False,
         "--show",
-        "-s",
         help="Show full content of all enabled sources",
-    ),
-    edit: bool = typer.Option(
-        False,
-        "--edit",
-        "-e",
-        help="Open taste.md in $EDITOR",
     ),
     interactive: bool = typer.Option(
         False,
@@ -120,8 +177,8 @@ def profile_callback(
     [bold cyan]EXAMPLES[/bold cyan]:
       [dim]$[/dim] serendipity profile             [dim]# Overview of all sources[/dim]
       [dim]$[/dim] serendipity profile --show      [dim]# Full content of each source[/dim]
-      [dim]$[/dim] serendipity profile --edit      [dim]# Edit taste.md[/dim]
       [dim]$[/dim] serendipity profile -i          [dim]# Interactive setup wizard[/dim]
+      [dim]$[/dim] serendipity profile edit taste  [dim]# Edit taste.md[/dim]
       [dim]$[/dim] serendipity profile --enable-source whorl
     """
     import yaml
@@ -155,25 +212,6 @@ def profile_callback(
     # Handle -i interactive wizard
     if interactive:
         _profile_interactive_wizard(storage)
-        return
-
-    # Handle --edit flag
-    if edit:
-        taste_path = storage.taste_path
-        if not taste_path.exists():
-            taste_path.parent.mkdir(parents=True, exist_ok=True)
-            taste_path.write_text(
-                "# My Taste Profile\n\n"
-                "<!-- DELETE EVERYTHING AND REPLACE WITH YOUR TASTE -->\n\n"
-                "Describe your aesthetic preferences, interests, and what you enjoy.\n\n"
-                "Examples:\n"
-                "- I'm drawn to Japanese minimalism and wabi-sabi aesthetics\n"
-                "- I love long-form essays on philosophy and design\n"
-                "- I appreciate things that feel contemplative and unhurried\n"
-            )
-        editor = os.environ.get("EDITOR", "vim")
-        subprocess.run([editor, str(taste_path)])
-        console.print(success(f"Taste profile saved to {taste_path}"))
         return
 
     # If subcommand provided, let it handle
@@ -213,14 +251,14 @@ def profile_callback(
                 elif name == "history":
                     recent = storage.load_recent_history(20)
                     content = f"{len(recent)} recent items"
-                elif name == "style_guidance":
-                    content = "[custom HTML styling]"
 
             if content:
-                words = storage.count_words(content) if name != "history" else 0
-                total_words += words
+                # Don't count placeholder strings (history)
+                if name != "history":
+                    words = storage.count_words(content)
+                    total_words += words
 
-            if show and content and name not in ["history", "style_guidance"]:
+            if show and content and name != "history":
                 # Full content mode
                 console.print(f"{status} [bold]{name}[/bold] ({source_type}) - {words} words")
                 console.print(Panel(content, border_style="dim"))
@@ -239,7 +277,7 @@ def profile_callback(
 
     console.print(f"\n[dim]Total context: ~{total_words} words[/dim]")
     console.print(f"\n[dim]Setup wizard: serendipity profile -i[/dim]")
-    console.print(f"[dim]Edit taste: serendipity profile --edit[/dim]")
+    console.print(f"[dim]Edit taste: serendipity profile edit taste[/dim]")
     console.print(f"[dim]Toggle source: serendipity profile --enable-source <name>[/dim]")
 
 
@@ -698,7 +736,7 @@ def _handle_profile_mcp_source(source_config) -> None:
 
 
 def _handle_profile_generic_loader(storage: StorageManager, source_config) -> None:
-    """Handle generic loader sources (like style_guidance)."""
+    """Handle generic loader sources."""
     console.print(f"\n[bold]{source_config.name}[/bold] [dim](loader)[/dim]")
     console.print(f"[dim]Type: {source_config.type}[/dim]")
 
@@ -708,13 +746,7 @@ def _handle_profile_generic_loader(storage: StorageManager, source_config) -> No
     raw = source_config.raw_config
     loader = raw.get("loader", "unknown")
     console.print(f"\n[cyan]Loader:[/cyan] {loader}")
-
-    # Try to get content preview
-    if source_config.name == "style_guidance":
-        console.print("\n[dim]Content: Dynamic HTML styling guidance based on taste profile[/dim]")
-    else:
-        console.print(f"\n[dim]This source has no editable file.[/dim]")
-
+    console.print(f"\n[dim]This source has no editable file.[/dim]")
     console.print(f"[dim]Status: {'enabled' if source_config.enabled else 'disabled'}[/dim]")
 
 
@@ -1102,28 +1134,27 @@ def discover_cmd(
         )
 
         if not has_taste:
-            # No profile - show onboarding
-            console.print(Panel(
-                "[bold]Welcome to Serendipity![/bold]\n\n"
-                "To get personalized recommendations, first set up your taste profile:\n\n"
-                "  serendipity profile taste --edit\n\n"
-                "Or provide context for what you're looking for:\n\n"
-                "  serendipity \"I'm in the mood for...\"    # Quick prompt\n"
-                "  serendipity -i                          # Open editor\n"
-                "  serendipity notes.md                    # From file\n",
-                title="Getting Started",
-                border_style="blue",
-            ))
-            raise typer.Exit(code=0)
-
-        # Has profile - use "surprise me" mode
-        context = (
-            "Surprise me! Based on my taste profile and what I've liked before, "
-            "recommend things you think I'll enjoy. No specific mood or topic - "
-            "just your best guesses for what would delight me right now."
-        )
-        console.print("[dim]No input provided - running in 'surprise me' mode[/dim]")
-        console.print()
+            # No profile - run with generic prompt and note about customization
+            context = (
+                "Surprise me! Recommend a diverse mix of interesting content - "
+                "articles, videos, books, podcasts, or anything else you think "
+                "is worth exploring. I'm open to all topics and formats."
+            )
+            console.print("[dim]No input provided - running in open discovery mode[/dim]")
+            console.print(
+                "[dim]Tip: Create a taste profile for personalized recommendations: "
+                "serendipity profile edit taste[/dim]"
+            )
+            console.print()
+        else:
+            # Has profile - use "surprise me" mode
+            context = (
+                "Surprise me! Based on my taste profile and what I've liked before, "
+                "recommend things you think I'll enjoy. No specific mood or topic - "
+                "just your best guesses for what would delight me right now."
+            )
+            console.print("[dim]No input provided - running in 'surprise me' mode[/dim]")
+            console.print()
 
     # Create context source manager using settings
     ctx_manager = ContextSourceManager(settings, console)
@@ -1141,14 +1172,9 @@ def discover_cmd(
         )
         # Build context from all enabled sources
         context_aug, load_warnings = await ctx_manager.build_context(storage)
-        # Extract style_guidance (backwards compatibility)
-        style_guide = ""
-        if "style_guidance" in ctx_manager.sources and ctx_manager.sources["style_guidance"].enabled:
-            style_result = await ctx_manager.sources["style_guidance"].load(storage)
-            style_guide = style_result.prompt_section
-        return init_warnings, context_aug, load_warnings, style_guide
+        return init_warnings, context_aug, load_warnings
 
-    init_warnings, context_augmentation, load_warnings, style_guidance = asyncio.run(
+    init_warnings, context_augmentation, load_warnings = asyncio.run(
         init_and_build_context()
     )
     for warn_msg in init_warnings:
@@ -1199,7 +1225,6 @@ def discover_cmd(
     result = agent.run_sync(
         context,
         context_augmentation=context_augmentation,
-        style_guidance=style_guidance,
     )
     console.print()
 
@@ -1279,7 +1304,6 @@ def settings_callback(
     show: bool = typer.Option(
         True,
         "--show",
-        "-s",
         help="Show current settings",
     ),
     edit: bool = typer.Option(
@@ -1367,7 +1391,7 @@ def settings_callback(
         config = storage.load_config()
         builder = PromptBuilder(config)
         console.print(Panel(
-            builder.build_type_guidance(),
+            builder.build_type_guidance() + "\n\n" + builder.build_output_schema(),
             title="Generated Prompt Sections",
             border_style="dim",
         ))
@@ -2168,8 +2192,7 @@ def profile_edit(
 ) -> None:
     """Edit a context source in $EDITOR.
 
-    Only file-based sources can be edited. MCP sources and dynamic loaders
-    (like style_guidance) are read-only.
+    Only file-based sources can be edited. MCP sources are read-only.
 
     [bold cyan]EXAMPLES[/bold cyan]:
       [dim]$[/dim] serendipity profile edit taste       [dim]# Edit taste.md[/dim]
@@ -2523,14 +2546,22 @@ def profile_create(
         "-f",
         help="Copy from existing profile",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Launch interactive setup wizard after creating profile",
+    ),
 ) -> None:
     """Create a new profile.
 
     Creates an empty profile or copies from an existing one.
+    Use -i to launch an interactive wizard to set up taste preferences.
 
     [bold cyan]EXAMPLES[/bold cyan]:
       [dim]$[/dim] serendipity profile create work
       [dim]$[/dim] serendipity profile create minimalist --from default
+      [dim]$[/dim] serendipity profile create personal -i   [dim]# With setup wizard[/dim]
     """
     pm = ProfileManager()
 
@@ -2541,7 +2572,16 @@ def profile_create(
         else:
             console.print(success(f"Created profile '{name}'"))
         console.print(f"[dim]{path}[/dim]")
-        console.print(f"\n[dim]Switch to it: serendipity profile use {name}[/dim]")
+
+        if interactive:
+            # Switch to the new profile and run wizard
+            pm.set_active_profile(name)
+            console.print(f"\n[bold]Switched to profile '{name}'[/bold]")
+            storage = StorageManager()
+            _profile_interactive_wizard(storage)
+        else:
+            console.print(f"\n[dim]Switch to it: serendipity profile use {name}[/dim]")
+            console.print(f"[dim]Set up profile: serendipity profile use {name} && serendipity profile -i[/dim]")
     except ValueError as e:
         console.print(error(str(e)))
         raise typer.Exit(1)
