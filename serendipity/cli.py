@@ -935,13 +935,26 @@ def _start_feedback_server(
     # Store reference to server for registering session input
     server_ref = [None]
 
-    async def on_more_request(session_id: str, rec_type: str, count: int, session_feedback: list = None):
+    async def on_more_request(
+        session_id: str,
+        rec_type: str,
+        count: int,
+        session_feedback: list = None,
+        profile_diffs: dict = None,
+        custom_directives: str = "",
+    ):
         """Handle 'more' requests from HTML."""
         try:
             console.print(f"[dim]Getting {count} more {rec_type} recommendations...[/dim]")
             if session_feedback:
                 console.print(f"[dim]With {len(session_feedback)} feedback items from this session[/dim]")
-            recommendations = await agent.get_more(session_id, rec_type, count, session_feedback)
+            if profile_diffs:
+                console.print(f"[dim]With profile updates: {', '.join(profile_diffs.keys())}[/dim]")
+            if custom_directives:
+                console.print(f"[dim]With custom directives: {custom_directives[:50]}...[/dim]" if len(custom_directives) > 50 else f"[dim]With custom directives: {custom_directives}[/dim]")
+            recommendations = await agent.get_more(
+                session_id, rec_type, count, session_feedback, profile_diffs, custom_directives
+            )
 
             # Save to history
             entries = []
@@ -1141,6 +1154,9 @@ def discover_cmd(
     max_thinking_tokens = thinking if thinking is not None else settings.thinking_tokens
     total_count = count if count is not None else settings.total_count
     server_port = port if port is not None else settings.feedback_server_port
+
+    # Update settings with CLI overrides so agent/prompt builder uses correct values
+    settings.total_count = total_count
 
     # Resolve output format and destination
     # Priority: CLI flag > pipe detection > settings default
@@ -1741,7 +1757,7 @@ def settings_edit_cmd(
 def settings_add(
     add_type: str = typer.Argument(
         ...,
-        help="What to add: media, approach, or source",
+        help="What to add: media, approach, source, or pairing",
     ),
     name: Optional[str] = typer.Option(
         None,
@@ -1772,8 +1788,19 @@ def settings_add(
         "--path",
         help="File path (for loader sources)",
     ),
+    search_based: bool = typer.Option(
+        False,
+        "--search-based",
+        "-s",
+        help="Use WebSearch for real links (only for 'pairing')",
+    ),
+    icon: Optional[str] = typer.Option(
+        None,
+        "--icon",
+        help="Emoji icon (only for 'pairing', e.g., '🎵')",
+    ),
 ) -> None:
-    """Add a new media type, approach, or context source.
+    """Add a new media type, approach, context source, or pairing.
 
     [bold cyan]EXAMPLES[/bold cyan]:
       [dim]$[/dim] serendipity settings add media -i                     [dim]# Interactive[/dim]
@@ -1781,12 +1808,15 @@ def settings_add(
       [dim]$[/dim] serendipity settings add approach -n lucky            [dim]# New approach[/dim]
       [dim]$[/dim] serendipity settings add source -n notes -t loader    [dim]# Loader source[/dim]
       [dim]$[/dim] serendipity settings add source -n custom -t mcp      [dim]# MCP source[/dim]
+      [dim]$[/dim] serendipity settings add pairing -i                   [dim]# Interactive pairing[/dim]
+      [dim]$[/dim] serendipity settings add pairing -n quote -d "Quote"  [dim]# Generated pairing[/dim]
+      [dim]$[/dim] serendipity settings add pairing -n drink -s          [dim]# Search-based pairing[/dim]
     """
     import yaml
 
     from serendipity import settings as settings_module
 
-    valid_types = ["media", "approach", "source"]
+    valid_types = ["media", "approach", "source", "pairing"]
     if add_type not in valid_types:
         console.print(error(f"Unknown type: {add_type}"))
         console.print(f"[dim]Valid types: {', '.join(valid_types)}[/dim]")
@@ -1800,6 +1830,8 @@ def settings_add(
             _add_approach_interactive()
         elif add_type == "source":
             _add_source_interactive(source_type)
+        elif add_type == "pairing":
+            _add_pairing_interactive()
         return
 
     # Non-interactive mode with explicit options
@@ -1836,6 +1868,16 @@ def settings_add(
             new_config = settings_module.add_mcp_source(name=name)
 
         console.print(success(f"Added {source_type} source '{name}'"))
+        console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+    elif add_type == "pairing":
+        new_config = settings_module.add_pairing(
+            name=name,
+            display_name=display,
+            search_based=search_based,
+            icon=icon or "",
+        )
+        console.print(success(f"Added pairing '{name}'"))
         console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
 
 
@@ -2014,6 +2056,61 @@ def _add_source_interactive(preset_type: Optional[str] = None) -> None:
         )
 
     console.print(success(f"Added {source_type} source '{name}'"))
+    console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
+
+
+def _add_pairing_interactive() -> None:
+    """Interactive wizard for adding a pairing type."""
+    import yaml
+
+    from serendipity import settings as settings_module
+
+    console.print(Panel(
+        "Add a new pairing (contextual bonus content like music, food, tips)",
+        title="Add Pairing",
+        border_style="blue",
+    ))
+
+    name = questionary.text(
+        "Internal name (lowercase, no spaces):",
+        validate=lambda x: bool(x.strip() and x.replace("_", "").isalnum()),
+    ).ask()
+    if not name:
+        console.print(warning("Cancelled"))
+        return
+
+    default_display = name.replace("_", " ").title()
+    display_name = questionary.text(
+        "Display name:",
+        default=default_display,
+    ).ask()
+    if not display_name:
+        display_name = default_display
+
+    search_based = questionary.confirm(
+        "Use WebSearch for real links? (No = generate from knowledge)",
+        default=False,
+    ).ask()
+
+    icon = questionary.text(
+        "Icon emoji (e.g., 🎵, 🍽️, 💡):",
+        default="",
+    ).ask()
+
+    prompt_hint = questionary.text(
+        "Prompt hint (guidance for generating this pairing):",
+        default=f"Suggest a {name} that complements the user's context.",
+    ).ask()
+
+    new_config = settings_module.add_pairing(
+        name=name,
+        display_name=display_name,
+        search_based=search_based or False,
+        icon=icon or "",
+        prompt_hint=prompt_hint or "",
+    )
+
+    console.print(success(f"Added pairing '{name}'"))
     console.print(Panel(yaml.dump({name: new_config}, default_flow_style=False), title="Configuration"))
 
 
