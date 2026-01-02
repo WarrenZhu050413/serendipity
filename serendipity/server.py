@@ -36,6 +36,7 @@ class FeedbackServer:
         idle_timeout: int = 600,  # 10 minutes
         html_content: Optional[str] = None,
         static_dir: Optional[Path] = None,
+        initial_data: Optional[dict] = None,
     ):
         """Initialize feedback server.
 
@@ -50,6 +51,8 @@ class FeedbackServer:
             idle_timeout: Seconds of inactivity before auto-shutdown
             html_content: Optional HTML content to serve at / (legacy mode)
             static_dir: Optional directory to serve static files from
+            initial_data: Optional dict with session_id, recommendations, pairings, icons
+                for React frontend initialization
         """
         self.storage = storage
         self.on_more_request = on_more_request
@@ -57,6 +60,7 @@ class FeedbackServer:
         self.idle_timeout = idle_timeout
         self.html_content = html_content
         self.static_dir = static_dir
+        self.initial_data = initial_data or {}
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -130,8 +134,14 @@ class FeedbackServer:
         self._app.router.add_options("/api/versions/{file}/{version_id}", self._handle_cors)
         self._app.router.add_options("/api/versions/{file}/{version_id}/restore", self._handle_cors)
 
+        # Session init for React frontend
+        self._app.router.add_get("/api/session/init", self._handle_session_init)
+        self._app.router.add_options("/api/session/init", self._handle_cors)
+
         # Serve static files from static_dir if provided, otherwise use legacy html_content
         if self.static_dir:
+            # Handle Vite/React asset paths
+            self._app.router.add_get("/assets/{path:.*}", self._handle_static_asset)
             self._app.router.add_get("/{filename}", self._handle_static_file)
             self._app.router.add_get("/", self._handle_index)
         else:
@@ -281,16 +291,37 @@ class FeedbackServer:
         self.session_inputs[session_id] = user_input
 
     async def _handle_index(self, request: web.Request) -> web.Response:
-        """Serve the HTML page."""
+        """Serve the HTML page (React SPA or legacy)."""
         self._update_activity()
+
+        # Try to serve React's index.html from static_dir
+        if self.static_dir:
+            index_path = self.static_dir / "index.html"
+            if index_path.exists():
+                return web.Response(
+                    text=index_path.read_text(),
+                    content_type="text/html",
+                    headers=self._cors_headers(),
+                )
+
+        # Legacy mode: serve embedded HTML content
         if self.html_content:
             return web.Response(
                 text=self.html_content,
                 content_type="text/html",
             )
+
         return web.Response(
             text="<html><body><h1>Serendipity</h1><p>No content available.</p></body></html>",
             content_type="text/html",
+        )
+
+    async def _handle_session_init(self, request: web.Request) -> web.Response:
+        """Return initial session data for React frontend."""
+        self._update_activity()
+        return web.json_response(
+            self.initial_data,
+            headers=self._cors_headers(),
         )
 
     async def _handle_static_file(self, request: web.Request) -> web.Response:
@@ -312,13 +343,78 @@ class FeedbackServer:
         if not file_path.exists() or not file_path.is_file():
             return web.Response(status=404, text="Not found")
 
-        # Determine content type
-        content_type = "text/html" if filename.endswith(".html") else "application/octet-stream"
+        # Determine content type based on extension
+        content_type = self._get_content_type(filename)
+
+        # Binary files (images, fonts) need to be read as bytes
+        if content_type.startswith(("image/", "font/", "application/octet")):
+            return web.Response(
+                body=file_path.read_bytes(),
+                content_type=content_type,
+                headers=self._cors_headers(),
+            )
 
         return web.Response(
             text=file_path.read_text(),
             content_type=content_type,
+            headers=self._cors_headers(),
         )
+
+    async def _handle_static_asset(self, request: web.Request) -> web.Response:
+        """Serve Vite/React assets from /assets/ subdirectory."""
+        self._update_activity()
+
+        if not self.static_dir:
+            return web.Response(status=404, text="Not found")
+
+        path = request.match_info.get("path", "")
+        if not path:
+            return web.Response(status=404, text="Not found")
+
+        # Security: prevent path traversal
+        if ".." in path:
+            return web.Response(status=403, text="Forbidden")
+
+        file_path = self.static_dir / "assets" / path
+        if not file_path.exists() or not file_path.is_file():
+            return web.Response(status=404, text="Not found")
+
+        content_type = self._get_content_type(path)
+
+        # Binary files need to be read as bytes
+        if content_type.startswith(("image/", "font/", "application/octet")):
+            return web.Response(
+                body=file_path.read_bytes(),
+                content_type=content_type,
+                headers=self._cors_headers(),
+            )
+
+        return web.Response(
+            text=file_path.read_text(),
+            content_type=content_type,
+            headers=self._cors_headers(),
+        )
+
+    def _get_content_type(self, filename: str) -> str:
+        """Get MIME type for a file based on extension."""
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        mime_types = {
+            "html": "text/html",
+            "css": "text/css",
+            "js": "application/javascript",
+            "json": "application/json",
+            "svg": "image/svg+xml",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "ico": "image/x-icon",
+            "woff": "font/woff",
+            "woff2": "font/woff2",
+            "ttf": "font/ttf",
+            "eot": "application/vnd.ms-fontobject",
+        }
+        return mime_types.get(ext, "application/octet-stream")
 
     async def _handle_feedback(self, request: web.Request) -> web.Response:
         """Handle feedback/rating submission.

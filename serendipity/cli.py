@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from serendipity.agent import Recommendation, SerendipityAgent
+from serendipity.agent import DiscoveryResult, Recommendation, SerendipityAgent
 from serendipity.config.types import TypesConfig, context_from_storage
 from serendipity.context_sources import ContextSourceManager
 from serendipity.output_destinations import DestinationManager
@@ -916,6 +916,7 @@ async def _run_server_in_main(
     user_input: str,
     session_id: str,
     html_path: Path,
+    result: Optional["DiscoveryResult"] = None,
 ) -> None:
     """Run feedback server in main thread's event loop.
 
@@ -930,10 +931,23 @@ async def _run_server_in_main(
         user_input: User's original input for context panel
         session_id: Session ID from discovery
         html_path: Path to the generated HTML file
+        result: Optional DiscoveryResult for React frontend initial data
     """
     import webbrowser
 
+    from serendipity.icons import discover_icons
     from serendipity.server import FeedbackServer
+
+    # Build initial data for React frontend
+    initial_data = {}
+    if result:
+        all_recs = list(result.convergent) + list(result.divergent)
+        initial_data = {
+            "session_id": result.session_id,
+            "recommendations": [rec.to_dict() for rec in all_recs],
+            "pairings": [p.to_dict() for p in result.pairings],
+            "icons": discover_icons(),
+        }
 
     async def on_more_request(
         session_id: str,
@@ -1017,6 +1031,7 @@ async def _run_server_in_main(
         on_more_stream_request=on_more_stream_request,
         idle_timeout=600,  # 10 minutes
         static_dir=static_dir,
+        initial_data=initial_data,
     )
 
     # Register user input for context panel
@@ -1342,6 +1357,7 @@ def discover_cmd(
                 user_input=context,
                 session_id=result.session_id,
                 html_path=result.html_path,
+                result=result,
             ))
         except KeyboardInterrupt:
             pass  # Server stopped message already printed in _run_server_in_main
