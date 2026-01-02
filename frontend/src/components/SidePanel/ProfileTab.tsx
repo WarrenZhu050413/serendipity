@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { X, ThumbsUp, ThumbsDown } from '../icons'
 import type { UseProfileReturn } from '../../hooks'
 import type { HistoryEntry } from '../../types'
 
@@ -85,7 +86,7 @@ export function ProfileTab({ profile }: ProfileTabProps) {
                     title="Delete"
                     onClick={() => profile.deleteLearning(l.id)}
                   >
-                    <XIcon size={12} />
+                    <X size={12} />
                   </button>
                 </div>
               </div>
@@ -130,14 +131,14 @@ export function ProfileTab({ profile }: ProfileTabProps) {
             className={`pref-tab ${prefTab === 'liked' ? 'active' : ''}`}
             onClick={() => setPrefTab('liked')}
           >
-            <ThumbsUpIcon />
+            <ThumbsUp className="tab-icon" size={16} />
             Liked
           </button>
           <button
             className={`pref-tab ${prefTab === 'disliked' ? 'active' : ''}`}
             onClick={() => setPrefTab('disliked')}
           >
-            <ThumbsDownIcon />
+            <ThumbsDown className="tab-icon" size={16} />
             Disliked
           </button>
         </div>
@@ -218,9 +219,9 @@ interface HistoryItemProps {
 
 function HistoryItem({ entry, onDelete }: HistoryItemProps) {
   const icon = entry.feedback === 'liked' ? (
-    <ThumbsUpIcon size={14} />
+    <ThumbsUp size={14} />
   ) : entry.feedback === 'disliked' ? (
-    <ThumbsDownIcon size={14} />
+    <ThumbsDown size={14} />
   ) : (
     <span>•</span>
   )
@@ -234,65 +235,8 @@ function HistoryItem({ entry, onDelete }: HistoryItemProps) {
         <span className="history-title">{entry.title || entry.url}</span>
       </div>
       <button className="history-delete" title="Remove" onClick={onDelete}>
-        <XIcon size={12} />
+        <X size={12} />
       </button>
     </div>
-  )
-}
-
-// ============================================================
-// Icons
-// ============================================================
-
-function XIcon({ size = 24 }: { size?: number }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
-      <line x1={18} y1={6} x2={6} y2={18} />
-      <line x1={6} y1={6} x2={18} y2={18} />
-    </svg>
-  )
-}
-
-function ThumbsUpIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      className="tab-icon"
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
-    </svg>
-  )
-}
-
-function ThumbsDownIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      className="tab-icon"
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
-    </svg>
   )
 }

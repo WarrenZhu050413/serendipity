@@ -1,4 +1,5 @@
 import { StarRating } from '../StarRating'
+import { mediaTypeIcons, LinkIcon } from '../icons'
 import type { Recommendation } from '../../types'
 
 interface CardProps {
@@ -10,43 +11,11 @@ interface CardProps {
   icons: Record<string, string>
 }
 
-export function Card({ recommendation, rating, onRating, isNew, index, icons }: CardProps) {
+export function Card({ recommendation, rating, onRating, isNew, index }: CardProps) {
   const { url, title, reason, media_type, approach, metadata } = recommendation
 
-  // Get icon for media type
-  const getIconHtml = (iconName: string) => {
-    const path = icons[iconName]
-    if (!path) return null
-    return (
-      <svg
-        className="card-icon"
-        viewBox="0 0 24 24"
-        width={16}
-        height={16}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        dangerouslySetInnerHTML={{ __html: path }}
-      />
-    )
-  }
-
-  // Map media type to icon name
-  const mediaTypeIcons: Record<string, string> = {
-    article: 'book-open',
-    book: 'book',
-    podcast: 'headphones',
-    video: 'play',
-    music: 'music',
-    art: 'palette',
-    architecture: 'building',
-    course: 'graduation-cap',
-    tool: 'wrench',
-    newsletter: 'mail',
-    paper: 'file-text',
-  }
+  // Get icon component for media type
+  const MediaIcon = mediaTypeIcons[media_type] || LinkIcon
 
   return (
     <div
@@ -70,7 +39,7 @@ export function Card({ recommendation, rating, onRating, isNew, index, icons }: 
           {approach}
         </span>
         <span className={`card-tag media-${media_type}`}>
-          {getIconHtml(mediaTypeIcons[media_type] || 'link')}
+          <MediaIcon className="card-icon" size={16} />
           {media_type}
         </span>
       </div>

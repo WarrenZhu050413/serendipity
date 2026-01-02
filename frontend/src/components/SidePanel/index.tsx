@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ProfileTab } from './ProfileTab'
 import { SettingsTab } from './SettingsTab'
+import { ChevronsLeft } from '../icons'
 import type { UseProfileReturn, UseSettingsReturn } from '../../hooks'
 
 interface SidePanelProps {
@@ -44,7 +45,7 @@ export function SidePanel({ profile, settings, icons }: SidePanelProps) {
           onClick={() => setIsCollapsed(!isCollapsed)}
           title={isCollapsed ? 'Expand panel' : 'Collapse panel'}
         >
-          <CollapseIcon />
+          <ChevronsLeft size={16} />
         </button>
       </nav>
 
@@ -57,22 +58,5 @@ export function SidePanel({ profile, settings, icons }: SidePanelProps) {
         )}
       </div>
     </aside>
-  )
-}
-
-function CollapseIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      width={16}
-      height={16}
-    >
-      <polyline points="11 17 6 12 11 7" />
-      <polyline points="18 17 13 12 18 7" />
-    </svg>
   )
 }

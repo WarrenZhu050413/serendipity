@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Header } from './components/Header'
 import { SidePanel } from './components/SidePanel'
 import { DiscoveryGrid } from './components/DiscoveryGrid'
+import { CanvasView } from './components/CanvasView'
 import { LoadingOverlay } from './components/LoadingOverlay'
+import { ThumbsUp, ThumbsDown, RotateCw } from './components/icons'
 import { useSSE } from './hooks/useSSE'
 import { useProfile } from './hooks/useProfile'
 import { useSettings } from './hooks/useSettings'
@@ -30,6 +32,9 @@ function App() {
 
   // Directives
   const [directives, setDirectives] = useState('')
+
+  // View mode
+  const [viewMode, setViewMode] = useState<'list' | 'canvas'>('list')
 
   // Profile and settings hooks
   const profile = useProfile()
@@ -178,11 +183,23 @@ function App() {
     })
   }
 
+  // Get enabled approaches for canvas grow
+  const getEnabledApproaches = useCallback(() => {
+    return settings.getEnabledApproaches()
+  }, [settings])
+
+  // Get profile diffs for canvas grow
+  const getProfileDiffs = useCallback(() => {
+    return profile.getProfileDiffs()
+  }, [profile])
+
   return (
     <div className="app-container">
       <Header
         theme={theme}
         onToggleTheme={toggleTheme}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
       />
 
       <div className="main-layout">
@@ -192,47 +209,60 @@ function App() {
           icons={icons}
         />
 
-        <main className="center-panel">
-          <div className="center-header">
-            <div className="stats-bar">
-              <div className="stat">Shown: <span>{stats.shown}</span></div>
-              <div className="stat liked">
-                <ThumbsUpIcon />
-                <span>{stats.liked}</span>
+        {viewMode === 'list' ? (
+          <main className="center-panel">
+            <div className="center-header">
+              <div className="stats-bar">
+                <div className="stat">Shown: <span>{stats.shown}</span></div>
+                <div className="stat liked">
+                  <ThumbsUp className="stat-icon" size={16} />
+                  <span>{stats.liked}</span>
+                </div>
+                <div className="stat disliked">
+                  <ThumbsDown className="stat-icon" size={16} />
+                  <span>{stats.disliked}</span>
+                </div>
               </div>
-              <div className="stat disliked">
-                <ThumbsDownIcon />
-                <span>{stats.disliked}</span>
+              <div className="directives-row">
+                <input
+                  type="text"
+                  className="directives-input"
+                  placeholder="More philosophy, avoid podcasts, shorter reads..."
+                  value={directives}
+                  onChange={(e) => setDirectives(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleRequestMore()
+                    }
+                  }}
+                />
+                <button className="round-btn" onClick={handleRequestMore}>
+                  <RotateCw size={16} />
+                  Another Round
+                </button>
               </div>
             </div>
-            <div className="directives-row">
-              <input
-                type="text"
-                className="directives-input"
-                placeholder="More philosophy, avoid podcasts, shorter reads..."
-                value={directives}
-                onChange={(e) => setDirectives(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    handleRequestMore()
-                  }
-                }}
-              />
-              <button className="round-btn" onClick={handleRequestMore}>
-                <RefreshIcon />
-                Another Round
-              </button>
-            </div>
-          </div>
 
-          <DiscoveryGrid
+            <DiscoveryGrid
+              batches={batches}
+              sessionFeedback={sessionFeedback}
+              onRating={handleRating}
+              icons={icons}
+            />
+          </main>
+        ) : (
+          <CanvasView
+            sessionId={sessionId}
             batches={batches}
-            sessionFeedback={sessionFeedback}
-            onRating={handleRating}
             icons={icons}
+            sessionFeedback={sessionFeedback}
+            profileDiffs={getProfileDiffs()}
+            getEnabledApproaches={getEnabledApproaches}
+            onRating={handleRating}
+            initialGrowCount={settings.data?.total_count ? Math.min(settings.data.total_count, 5) : 5}
           />
-        </main>
+        )}
       </div>
 
       <LoadingOverlay
@@ -242,32 +272,6 @@ function App() {
         searches={searches}
       />
     </div>
-  )
-}
-
-// Inline icon components (will be refactored to use icons system)
-function ThumbsUpIcon() {
-  return (
-    <svg className="stat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
-    </svg>
-  )
-}
-
-function ThumbsDownIcon() {
-  return (
-    <svg className="stat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
-    </svg>
-  )
-}
-
-function RefreshIcon() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <polyline points="23 4 23 10 17 10"></polyline>
-      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-    </svg>
   )
 }
 

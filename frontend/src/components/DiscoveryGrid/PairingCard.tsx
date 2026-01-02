@@ -1,3 +1,4 @@
+import { pairingTypeIcons } from '../icons'
 import type { Pairing } from '../../types'
 
 interface PairingCardProps {
@@ -6,44 +7,16 @@ interface PairingCardProps {
   icons: Record<string, string>
 }
 
-export function PairingCard({ pairing, isNew, icons }: PairingCardProps) {
+export function PairingCard({ pairing, isNew }: PairingCardProps) {
   const { type, title, content, url } = pairing
 
-  // Map pairing type to icon
-  const typeIcons: Record<string, string> = {
-    tip: 'lightbulb',
-    info: 'info',
-    resource: 'link',
-    music: 'music',
-    food: 'utensils',
-    quote: 'quote',
-    discussion: 'message-circle',
-    activity: 'activity',
-    wine: 'wine',
-    game: 'gamepad-2',
-  }
-
-  const iconPath = icons[typeIcons[type] || 'star']
+  // Get icon component for pairing type
+  const PairingIcon = pairingTypeIcons[type] || pairingTypeIcons.default
 
   return (
     <div className={`pairing-card pairing-${type} ${isNew ? 'new-pairing' : ''}`}>
       <div className="pairing-icon">
-        {iconPath ? (
-          <svg
-            className="pairing-icon-svg"
-            viewBox="0 0 24 24"
-            width={24}
-            height={24}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            dangerouslySetInnerHTML={{ __html: iconPath }}
-          />
-        ) : (
-          <span className="pairing-icon-fallback">✨</span>
-        )}
+        <PairingIcon className="pairing-icon-svg" size={24} />
       </div>
       <div className="pairing-content">
         <div className="pairing-title">{title}</div>
