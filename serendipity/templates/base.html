@@ -5,11 +5,11 @@ SERENDIPITY BASE TEMPLATE v2
 Left panel with Profile/Settings tabs, dark mode support, API integration.
 
 PLACEHOLDERS (automatically replaced by Python):
-- {css} - CSS from ~/.serendipity/style.css
-- {icons_json} - Auto-discovered SVG icons from static/icons/
-- {initial_batch_html} - Initial batch container (title + pairings + cards)
-- {session_id} - The current session ID
-- {server_port} - The feedback server port
+- css - CSS from ~/.serendipity/style.css
+- icons_json - Auto-discovered SVG icons from static/icons/
+- initial_data_json - Initial recommendations/pairings as JSON (rendered by JS)
+- session_id - The current session ID
+- server_port - The feedback server port
 
 Customize styling with: serendipity settings style --edit
 -->
@@ -281,10 +281,15 @@ Customize styling with: serendipity settings style --edit
                     </div>
                 </div>
 
-                <!-- Discovery Grid (batch containers with title + pairings + cards) -->
+                <!-- Discovery Grid (batch containers rendered by JS) -->
                 <div class="discovery-grid" id="recommendations">
-{initial_batch_html}
+                    <!-- Initial content rendered by JavaScript from INITIAL_DATA -->
                 </div>
+
+                <!-- Initial data for JS rendering -->
+                <script id="initial-data" type="application/json">
+{initial_data_json}
+                </script>
             </main>
         </div>
 
@@ -375,6 +380,9 @@ Customize styling with: serendipity settings style --edit
                 document.documentElement.setAttribute('data-theme', savedTheme);
             }
 
+            // Render initial data from embedded JSON
+            renderInitialData();
+
             // Initialize stats
             statsShown = document.querySelectorAll('.discovery-card').length;
             updateStats();
@@ -390,6 +398,22 @@ Customize styling with: serendipity settings style --edit
             setupSaveButtons();
             setupDirectivesInput();
         });
+
+        // Render initial recommendations from embedded JSON
+        function renderInitialData() {
+            const dataScript = document.getElementById('initial-data');
+            if (!dataScript) return;
+
+            try {
+                const data = JSON.parse(dataScript.textContent);
+                if (data && (data.recommendations?.length > 0 || data.pairings?.length > 0)) {
+                    // Use renderBatch for consistent rendering (no title for initial batch)
+                    renderBatch(null, data.pairings, data.recommendations);
+                }
+            } catch (e) {
+                console.error('Failed to parse initial data:', e);
+            }
+        }
 
         function setupDirectivesInput() {
             const input = document.getElementById('directives-input');

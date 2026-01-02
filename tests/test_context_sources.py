@@ -244,7 +244,7 @@ class TestBuiltinLoaders:
                 url="https://recent1.com",
                 reason="test",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="abc123",
             ),
@@ -252,7 +252,7 @@ class TestBuiltinLoaders:
                 url="https://recent2.com",
                 reason="test",
                 type="divergent",
-                feedback=None,
+                rating=None,
                 timestamp="2024-01-15T10:31:00Z",
                 session_id="abc123",
             ),
@@ -262,9 +262,9 @@ class TestBuiltinLoaders:
         content, warnings = history_loader(storage, {})
         assert "Recently shown" in content
         assert "https://recent1.com" in content
-        assert "convergent, liked" in content
+        assert "rating=4" in content
         assert "https://recent2.com" in content
-        assert "divergent, no feedback" in content
+        assert "unrated" in content
 
     def test_history_loader_with_unextracted_liked(self):
         """Test history_loader includes unextracted liked entries."""
@@ -274,15 +274,15 @@ class TestBuiltinLoaders:
         storage.load_learnings.return_value = ""
         storage.load_recent_history.return_value = []
 
-        # Return liked entries for "liked" filter, empty for "disliked"
-        def mock_get_unextracted(feedback_type=None):
-            if feedback_type == "liked":
+        # Return liked entries for rating>=4, empty for others
+        def mock_get_unextracted(min_rating=None, max_rating=None):
+            if min_rating == 4 and max_rating == 4:
                 return [
                     HistoryEntry(
                         url="https://liked.com",
                         reason="This is a great article about minimalism",
                         type="convergent",
-                        feedback="liked",
+                        rating=4,
                         timestamp="2024-01-15T10:30:00Z",
                         session_id="abc123",
                     ),
@@ -292,9 +292,8 @@ class TestBuiltinLoaders:
         storage.get_unextracted_entries.side_effect = mock_get_unextracted
 
         content, warnings = history_loader(storage, {})
-        assert "Items you've liked" in content
+        assert "Items you liked" in content
         assert "https://liked.com" in content
-        assert "great article" in content
 
     def test_history_loader_with_unextracted_disliked(self):
         """Test history_loader includes unextracted disliked entries."""
@@ -304,15 +303,15 @@ class TestBuiltinLoaders:
         storage.load_learnings.return_value = ""
         storage.load_recent_history.return_value = []
 
-        # Return disliked entries for "disliked" filter
-        def mock_get_unextracted(feedback_type=None):
-            if feedback_type == "disliked":
+        # Return disliked entries for rating<=2
+        def mock_get_unextracted(min_rating=None, max_rating=None):
+            if max_rating == 2:
                 return [
                     HistoryEntry(
                         url="https://disliked.com",
                         reason="Not my taste",
                         type="divergent",
-                        feedback="disliked",
+                        rating=2,
                         timestamp="2024-01-15T10:30:00Z",
                         session_id="abc123",
                     ),

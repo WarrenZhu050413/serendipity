@@ -192,13 +192,22 @@ class TasteQuestion:
 
 @dataclass
 class UserAnswer:
-    """User's response to a question."""
+    """User's response to a question with Likert ratings.
+
+    Uses 4-point rating scale: 1 (hate), 2 (dislike), 4 (like), 5 (love).
+    No neutral (3) - forced choice.
+    """
 
     question_id: str
     category: str
     question: str
-    selected: list[str]  # Selected option labels (for context)
+    ratings: dict[str, int]  # option_label → rating (1, 2, 4, 5)
     other: str = ""  # Free-form "other" response
+
+    @property
+    def selected(self) -> list[str]:
+        """Backward-compatible: return labels with positive ratings (4-5)."""
+        return [label for label, rating in self.ratings.items() if rating >= 4]
 
 
 @dataclass
@@ -450,7 +459,10 @@ class ProfileBuilder:
         self,
         questions: list[TasteQuestion],
     ) -> tuple[list[UserAnswer], str]:
-        """Display questions interactively and collect answers.
+        """Display questions interactively and collect Likert ratings.
+
+        Uses 4-point scale: 1 (hate), 2 (dislike), 4 (like), 5 (love).
+        Users rate each option (or skip).
 
         Args:
             questions: List of questions to ask
@@ -460,51 +472,64 @@ class ProfileBuilder:
         """
         answers = []
 
+        # Rating choices with star display (1-5 like Goodreads)
+        rating_choices = [
+            questionary.Choice("★ (hate)", value=1),
+            questionary.Choice("★★ (dislike)", value=2),
+            questionary.Choice("★★★ (neutral)", value=3),
+            questionary.Choice("★★★★ (like)", value=4),
+            questionary.Choice("★★★★★ (love)", value=5),
+            questionary.Choice("Skip", value=None),
+        ]
+
         for q in questions:
             # Category header
             self.console.print()
             self.console.print(f"[bold cyan]─── {q.category.upper()} ───[/bold cyan]")
             self.console.print()
 
-            # Build questionary choices with styled token tuples
-            choices = []
+            # Question with instructions
+            self.console.print(f"[bold]{q.question}[/bold]")
+            self.console.print("[dim]Rate each option (1=hate, 2=dislike, 4=like, 5=love, Skip=doesn't apply)[/dim]")
+            self.console.print()
+
+            ratings = {}
             for opt in q.options:
-                # Build styled title using token tuples
-                title_parts = [("class:text", opt.label)]
+                # Show option with description
+                label_text = f"  {opt.label}"
                 if opt.recommended:
-                    title_parts.append(("class:recommended", " ★"))
-                title_parts.append(("class:text", "\n      "))
-                title_parts.append(("class:description", opt.description))
-                choices.append(questionary.Choice(title=title_parts, value=opt.value))
+                    label_text += " [green]★[/green]"
+                self.console.print(label_text)
+                if opt.description:
+                    self.console.print(f"  [dim]{opt.description}[/dim]")
 
-            # Add "other" option with styling
-            choices.append(
-                questionary.Choice(
-                    title=[
-                        ("class:text", "Something else..."),
-                        ("class:text", "\n      "),
-                        ("class:description", "Enter your own answer"),
-                    ],
-                    value="__other__",
-                )
-            )
+                # Ask for rating
+                result = questionary.select(
+                    "",
+                    choices=rating_choices,
+                    style=PROFILE_STYLE,
+                ).ask()
 
-            # Ask question (always multi-select for richer answers)
-            result = questionary.checkbox(
-                q.question,
-                choices=choices,
-                instruction="(Space to select, Enter to confirm)",
+                # Handle cancel (Ctrl+C)
+                if result is None:
+                    return [], "cancel"
+
+                # Store rating if not skipped
+                if result is not None:
+                    ratings[opt.label] = result
+
+                self.console.print()
+
+            # Handle "other" free-form input
+            other_text = ""
+            add_other = questionary.confirm(
+                "Add something else?",
+                default=False,
                 style=PROFILE_STYLE,
             ).ask()
-            selected = result if result else []
-
-            # Handle cancel (Ctrl+C)
-            if result is None:
+            if add_other is None:
                 return [], "cancel"
-
-            # Handle "other" with text input
-            other_text = ""
-            if "__other__" in selected:
+            if add_other:
                 other_text = questionary.text(
                     "Please describe:",
                     instruction="(Enter your own answer)",
@@ -512,19 +537,13 @@ class ProfileBuilder:
                 ).ask()
                 if other_text is None:
                     return [], "cancel"
-                # Remove __other__ from selected, add the text
-                selected = [s for s in selected if s != "__other__"]
-
-            # Map values back to labels for context
-            value_to_label = {opt.value: opt.label for opt in q.options}
-            selected_labels = [value_to_label.get(s, s) for s in selected]
 
             answers.append(
                 UserAnswer(
                     question_id=q.id,
                     category=q.category,
                     question=q.question,
-                    selected=selected_labels,
+                    ratings=ratings,
                     other=other_text,
                 )
             )
@@ -547,15 +566,26 @@ class ProfileBuilder:
         return answers, action
 
     def _format_answers(self, answers: list[UserAnswer]) -> str:
-        """Format answers for inclusion in prompts."""
+        """Format answers for inclusion in prompts with intensity language."""
         if not answers:
             return ""
+
+        # Map ratings to intensity words
+        intensity_map = {
+            1: "strongly dislikes",
+            2: "dislikes",
+            3: "is neutral about",
+            4: "likes",
+            5: "loves",
+        }
 
         parts = []
         for a in answers:
             parts.append(f"**{a.category}**: {a.question}")
-            if a.selected:
-                parts.append(f"  Selected: {', '.join(a.selected)}")
+            if a.ratings:
+                for label, rating in a.ratings.items():
+                    intensity = intensity_map.get(rating, "rated")
+                    parts.append(f"  - {intensity}: {label}")
             if a.other:
                 parts.append(f"  Custom: {a.other}")
             parts.append("")

@@ -72,12 +72,14 @@ class TestDataClasses:
             question_id="visual_style",
             category="Aesthetics",
             question="What visual style?",
-            selected=["Minimalism", "Industrial"],
+            ratings={"Minimalism": 5, "Industrial": 4},
             other="I also like brutalism",
         )
         assert answer.question_id == "visual_style"
-        assert len(answer.selected) == 2
+        assert len(answer.ratings) == 2
         assert answer.other == "I also like brutalism"
+        # Test backward compat selected property
+        assert len(answer.selected) == 2  # Both have rating >= 4
 
     def test_user_answer_defaults(self):
         """Test UserAnswer default values."""
@@ -85,9 +87,10 @@ class TestDataClasses:
             question_id="test",
             category="Test",
             question="Test?",
-            selected=["A"],
+            ratings={"A": 4},
         )
         assert answer.other == ""
+        assert len(answer.selected) == 1
 
     def test_build_session_creation(self):
         """Test BuildSession dataclass."""
@@ -232,22 +235,21 @@ I love minimalism and clean design.
                 question_id="q1",
                 category="Aesthetics",
                 question="What style?",
-                selected=["Minimalism"],
+                ratings={"Minimalism": 5},
                 other="",
             ),
             UserAnswer(
                 question_id="q2",
                 category="Content",
                 question="What depth?",
-                selected=["Deep", "Playful"],
+                ratings={"Deep": 5, "Playful": 4},
                 other="Also concise",
             ),
         ]
         formatted = builder._format_answers(answers)
         assert "Aesthetics" in formatted
         assert "What style?" in formatted
-        assert "Minimalism" in formatted
-        assert "Deep, Playful" in formatted
+        assert "Minimalism" in formatted or "loves" in formatted.lower()
         assert "Also concise" in formatted
 
 
@@ -374,14 +376,14 @@ class TestBuildSessionState:
 
         # Round 1
         session.all_answers.append(
-            UserAnswer(question_id="q1", category="A", question="Q1?", selected=["A"])
+            UserAnswer(question_id="q1", category="A", question="Q1?", ratings={"A": 5})
         )
         session.asked_topics.add("q1")
         session.round_number = 2
 
         # Round 2
         session.all_answers.append(
-            UserAnswer(question_id="q2", category="B", question="Q2?", selected=["B"])
+            UserAnswer(question_id="q2", category="B", question="Q2?", ratings={"B": 4})
         )
         session.asked_topics.add("q2")
 

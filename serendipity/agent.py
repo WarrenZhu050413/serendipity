@@ -300,16 +300,19 @@ class SerendipityAgent:
         html_content = html_content.replace("{css}", self.style_css)
         html_content = html_content.replace("{icons_json}", get_icons_json())
 
-        # Combine all recommendations into a single list for masonry grid
+        # Combine all recommendations into a single list for JSON output
         all_recs = parsed.get("convergent", []) + parsed.get("divergent", [])
+        pairings = parsed.get("pairings", [])
+
+        # Convert to JSON for JavaScript rendering (single source of truth)
+        import json
+        initial_data = {
+            "recommendations": [rec.to_dict() for rec in all_recs],
+            "pairings": [p.to_dict() for p in pairings]
+        }
         html_content = html_content.replace(
-            "{recommendations_html}",
-            self._render_recommendations(all_recs)
-        )
-        # Add pairings section
-        html_content = html_content.replace(
-            "{pairings_html}",
-            self._render_pairings(parsed.get("pairings", []))
+            "{initial_data_json}",
+            json.dumps(initial_data, indent=2)
         )
         html_content = html_content.replace("{session_id}", session_id)
         html_content = html_content.replace("{server_port}", str(self.server_port))
@@ -362,17 +365,36 @@ class SerendipityAgent:
             else "divergent (expanding their palette)"
         )
 
-        # Build feedback context from current session
+        # Build feedback context from current session (supports both rating and legacy feedback)
         feedback_context = ""
         if session_feedback:
-            liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
-            disliked = [f["url"] for f in session_feedback if f.get("feedback") == "disliked"]
+            # Group by rating intensity (1-5 stars)
+            loved = [f["url"] for f in session_feedback if f.get("rating") == 5]
+            liked = [f["url"] for f in session_feedback if f.get("rating") == 4]
+            neutral = [f["url"] for f in session_feedback if f.get("rating") == 3]
+            disliked = [f["url"] for f in session_feedback if f.get("rating") == 2]
+            hated = [f["url"] for f in session_feedback if f.get("rating") == 1]
+
+            # Handle legacy feedback format
+            for f in session_feedback:
+                if "feedback" in f and "rating" not in f:
+                    if f["feedback"] == "liked":
+                        liked.append(f["url"])
+                    elif f["feedback"] == "disliked":
+                        disliked.append(f["url"])
+
+            if loved:
+                feedback_context += "\n\nFrom this session, the user LOVED (5/5 - strong signal):\n" + "\n".join(f"- {u}" for u in loved)
             if liked:
-                feedback_context += "\n\nFrom this session, the user LIKED:\n" + "\n".join(f"- {u}" for u in liked)
+                feedback_context += "\n\nFrom this session, the user liked (4/5):\n" + "\n".join(f"- {u}" for u in liked)
+            if neutral:
+                feedback_context += "\n\nFrom this session, the user was neutral about (3/5):\n" + "\n".join(f"- {u}" for u in neutral)
             if disliked:
-                feedback_context += "\n\nFrom this session, the user DISLIKED:\n" + "\n".join(f"- {u}" for u in disliked)
+                feedback_context += "\n\nFrom this session, the user disliked (2/5):\n" + "\n".join(f"- {u}" for u in disliked)
+            if hated:
+                feedback_context += "\n\nFrom this session, the user strongly disliked (1/5 - avoid similar):\n" + "\n".join(f"- {u}" for u in hated)
             if feedback_context:
-                feedback_context += "\n\nUse this feedback to refine your next recommendations."
+                feedback_context += "\n\nUse this feedback to refine your next recommendations. Weight 5/5 items heavily, 1/5 as strong negatives."
 
         # Build profile update context
         profile_update_context = ""
@@ -518,22 +540,41 @@ Output as JSON:
             data={"message": f"Getting {count} {display_type} recommendations..."}
         )
 
-        # Build feedback context
+        # Build feedback context (supports both rating and legacy feedback)
         feedback_context = ""
         if session_feedback:
-            liked = [f["url"] for f in session_feedback if f.get("feedback") == "liked"]
-            disliked = [f["url"] for f in session_feedback if f.get("feedback") == "disliked"]
-            if liked or disliked:
+            # Group by rating intensity (1-5 stars)
+            loved = [f["url"] for f in session_feedback if f.get("rating") == 5]
+            liked = [f["url"] for f in session_feedback if f.get("rating") == 4]
+            neutral = [f["url"] for f in session_feedback if f.get("rating") == 3]
+            disliked = [f["url"] for f in session_feedback if f.get("rating") == 2]
+            hated = [f["url"] for f in session_feedback if f.get("rating") == 1]
+
+            # Handle legacy feedback format
+            for f in session_feedback:
+                if "feedback" in f and "rating" not in f:
+                    if f["feedback"] == "liked":
+                        liked.append(f["url"])
+                    elif f["feedback"] == "disliked":
+                        disliked.append(f["url"])
+
+            if loved or liked or neutral or disliked or hated:
                 yield StatusEvent(
                     event="status",
                     data={"message": f"With {len(session_feedback)} feedback items"}
                 )
+            if loved:
+                feedback_context += "\n\nFrom this session, the user LOVED (5/5 - strong signal):\n" + "\n".join(f"- {u}" for u in loved)
             if liked:
-                feedback_context += "\n\nFrom this session, the user LIKED:\n" + "\n".join(f"- {u}" for u in liked)
+                feedback_context += "\n\nFrom this session, the user liked (4/5):\n" + "\n".join(f"- {u}" for u in liked)
+            if neutral:
+                feedback_context += "\n\nFrom this session, the user was neutral about (3/5):\n" + "\n".join(f"- {u}" for u in neutral)
             if disliked:
-                feedback_context += "\n\nFrom this session, the user DISLIKED:\n" + "\n".join(f"- {u}" for u in disliked)
+                feedback_context += "\n\nFrom this session, the user disliked (2/5):\n" + "\n".join(f"- {u}" for u in disliked)
+            if hated:
+                feedback_context += "\n\nFrom this session, the user strongly disliked (1/5 - avoid similar):\n" + "\n".join(f"- {u}" for u in hated)
             if feedback_context:
-                feedback_context += "\n\nUse this feedback to refine your next recommendations."
+                feedback_context += "\n\nUse this feedback to refine your next recommendations. Weight 5/5 items heavily, 1/5 as strong negatives."
 
         # Build profile update context
         profile_update_context = ""
@@ -562,14 +603,14 @@ Output as JSON:
         if is_multi_type:
             json_format = """{
   "batch_title": "A short evocative title for this batch",
-  "convergent": [{"url": "...", "reason": "..."}],
-  "divergent": [{"url": "...", "reason": "..."}],
+  "convergent": [{"url": "...", "title": "Name of the content", "reason": "...", "type": "article|book|youtube|..."}],
+  "divergent": [{"url": "...", "title": "Name of the content", "reason": "...", "type": "article|book|youtube|..."}],
   "pairings": [{"type": "quote|music|tip", "content": "...", "title": "optional link title", "url": "optional url"}]
 }"""
         else:
             json_format = f"""{{
   "batch_title": "A short evocative title for this batch",
-  "{types[0]}": [{{"url": "...", "reason": "..."}}],
+  "{types[0]}": [{{"url": "...", "title": "Name of the content", "reason": "...", "type": "article|book|youtube|..."}}],
   "pairings": [{{"type": "quote|music|tip", "content": "...", "title": "optional link title", "url": "optional url"}}]
 }}"""
 
@@ -682,8 +723,10 @@ Output as JSON:
                 for r in parsed.get(t, []):
                     all_recommendations.append({
                         "url": r.get("url", ""),
+                        "title": r.get("title", ""),
                         "reason": r.get("reason", ""),
-                        "type": t
+                        "approach": t,
+                        "media_type": r.get("type", "article"),
                     })
 
             # Extract batch_title and pairings
@@ -807,9 +850,8 @@ Output as JSON:
             "divergent": "Divergent",
         }
 
-        # SVG icons for feedback buttons
-        thumbs_up_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>'
-        thumbs_down_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"></path></svg>'
+        # Star SVG for 5-star rating system
+        star_svg = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" /></svg>'
 
         html_parts = []
         for idx, rec in enumerate(recs):
@@ -825,11 +867,21 @@ Output as JSON:
             # Card accent class (cycles through 6 colors)
             card_class = f"card-{(idx % 6) + 1}"
 
-            # Build title/URL display
+            # Build title/URL display - title is prominent, URL is smaller
+            # Extract domain from URL for cleaner display
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(rec.url).netloc.replace('www.', '')
+            except:
+                domain = rec.url[:50]
+
             if rec.title:
-                title_html = f'<a href="{url}" target="_blank" rel="noopener">{escape_html(rec.title)}</a>'
+                title_html = f'<a href="{url}" target="_blank" rel="noopener" class="card-title-link">{escape_html(rec.title)}</a>'
+                url_html = f'<a href="{url}" target="_blank" rel="noopener" class="card-url">{escape_html(domain)}</a>'
             else:
-                title_html = f'<a href="{url}" target="_blank" rel="noopener">{url}</a>'
+                # Fallback: use URL as title
+                title_html = f'<a href="{url}" target="_blank" rel="noopener" class="card-title-link">{escape_html(domain)}</a>'
+                url_html = ""
 
             # Build metadata slot from type-specific fields
             metadata_html = ""
@@ -842,13 +894,12 @@ Output as JSON:
                     metadata_html = f'<div class="card-meta">{"".join(meta_items)}</div>'
 
             html_parts.append(f'''                <article class="discovery-card {card_class}" data-url="{url}" data-approach="{approach}" data-media="{media_type}">
-                    <div class="card-feedback">
-                        <button class="feedback-btn like" title="Like" onclick="feedback(this, 'liked')">
-                            {thumbs_up_svg}
-                        </button>
-                        <button class="feedback-btn dislike" title="Dislike" onclick="feedback(this, 'disliked')">
-                            {thumbs_down_svg}
-                        </button>
+                    <div class="card-feedback star-rating" data-rating="0">
+                        <span class="star" data-value="1" title="1 star" onmouseover="previewRating(this, 1)" onmouseout="clearPreview(this)" onclick="setRating(this, 1)">{star_svg}</span>
+                        <span class="star" data-value="2" title="2 stars" onmouseover="previewRating(this, 2)" onmouseout="clearPreview(this)" onclick="setRating(this, 2)">{star_svg}</span>
+                        <span class="star" data-value="3" title="3 stars" onmouseover="previewRating(this, 3)" onmouseout="clearPreview(this)" onclick="setRating(this, 3)">{star_svg}</span>
+                        <span class="star" data-value="4" title="4 stars" onmouseover="previewRating(this, 4)" onmouseout="clearPreview(this)" onclick="setRating(this, 4)">{star_svg}</span>
+                        <span class="star" data-value="5" title="5 stars" onmouseover="previewRating(this, 5)" onmouseout="clearPreview(this)" onclick="setRating(this, 5)">{star_svg}</span>
                     </div>
                     <div class="card-body">
                         <div class="card-tags">
@@ -856,6 +907,7 @@ Output as JSON:
                             <span class="card-tag media">{media_label}</span>
                         </div>
                         <h3 class="card-title">{title_html}</h3>
+                        {url_html}
                         {metadata_html}
                         <p class="card-description">{reason}</p>
                     </div>
@@ -916,6 +968,81 @@ Output as JSON:
 
         html_parts.append('</div>')
         html_parts.append('</section>')
+
+        return "\n".join(html_parts)
+
+    def _render_initial_batch(
+        self,
+        recs: list[Recommendation],
+        pairings: list[Pairing],
+        batch_title: str = ""
+    ) -> str:
+        """Render initial batch as a batch container (title + pairings + cards).
+
+        Args:
+            recs: List of Recommendation objects
+            pairings: List of Pairing objects
+            batch_title: Optional title for this batch
+
+        Returns:
+            HTML string with batch container structure
+        """
+        def escape_html(text: str) -> str:
+            """Escape HTML special characters."""
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+        html_parts = []
+        html_parts.append('<div class="batch-container">')
+
+        # 1. Batch header with title (if provided)
+        if batch_title:
+            html_parts.append(f'''
+                <div class="batch-header">
+                    <span class="batch-title">{escape_html(batch_title)}</span>
+                </div>
+            ''')
+
+        # 2. Pairings row
+        if pairings:
+            # Build icon lookup from config
+            pairing_icons = {}
+            for p in self.types_config.pairings.values():
+                if p.icon:
+                    pairing_icons[p.name] = p.icon
+
+            html_parts.append('<div class="batch-pairings">')
+            for pairing in pairings:
+                icon_name = pairing_icons.get(pairing.type, "")
+                icon_html = get_icon_html(icon_name) if icon_name else '<span class="pairing-icon-svg">&#10024;</span>'
+                type_label = pairing.type.title()
+                content = escape_html(pairing.content)
+
+                # Build link if URL present
+                if pairing.url:
+                    title = escape_html(pairing.title or pairing.url)
+                    link_html = f'<a href="{escape_html(pairing.url)}" target="_blank" rel="noopener" class="pairing-link">{title}</a>'
+                else:
+                    link_html = ""
+
+                html_parts.append(f'''
+                    <article class="pairing-card pairing-{pairing.type}">
+                        <div class="pairing-icon">{icon_html}</div>
+                        <div class="pairing-body">
+                            <span class="pairing-type">{type_label}</span>
+                            <p class="pairing-content">{content}</p>
+                            {link_html}
+                        </div>
+                    </article>
+                ''')
+            html_parts.append('</div>')
+
+        # 3. Cards grid
+        if recs:
+            html_parts.append('<div class="batch-cards">')
+            html_parts.append(self._render_recommendations(recs))
+            html_parts.append('</div>')
+
+        html_parts.append('</div>')  # Close batch-container
 
         return "\n".join(html_parts)
 

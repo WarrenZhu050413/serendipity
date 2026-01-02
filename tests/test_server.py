@@ -190,7 +190,7 @@ class TestFeedbackServerContextEndpoint:
                 url="https://example.com",
                 reason="Great article",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-01T00:00:00",
                 session_id="session-1",
             ),
@@ -207,7 +207,7 @@ class TestFeedbackServerContextEndpoint:
         data = json.loads(response.text)
         assert len(data["history"]) == 1
         assert data["history"][0]["url"] == "https://example.com"
-        assert data["history"][0]["feedback"] == "liked"
+        assert data["history"][0]["rating"] == 4
 
     @pytest.mark.asyncio
     async def test_context_returns_user_input(self, storage):
@@ -409,28 +409,28 @@ class TestFeedbackEndpoint:
     def storage(self):
         """Create mock storage."""
         storage = MagicMock(spec=StorageManager)
-        storage.update_feedback.return_value = True
+        storage.update_rating.return_value = True
         return storage
 
     @pytest.mark.asyncio
     async def test_feedback_success(self, storage):
-        """Test successful feedback submission."""
+        """Test successful feedback submission with rating."""
         server = FeedbackServer(storage=storage)
 
         request = MagicMock()
         request.json = AsyncMock(return_value={
             "url": "https://example.com",
             "session_id": "test-session",
-            "feedback": "liked",
+            "rating": 4,
         })
 
         response = await server._handle_feedback(request)
         data = json.loads(response.text)
 
         assert data["success"] is True
-        assert data["feedback"] == "liked"
-        storage.update_feedback.assert_called_once_with(
-            "https://example.com", "test-session", "liked"
+        assert data["rating"] == 4
+        storage.update_rating.assert_called_once_with(
+            "https://example.com", "test-session", 4
         )
 
     @pytest.mark.asyncio
@@ -455,7 +455,7 @@ class TestFeedbackEndpoint:
         request = MagicMock()
         request.json = AsyncMock(return_value={
             "url": "https://example.com",
-            # Missing session_id and feedback
+            # Missing session_id and rating
         })
 
         response = await server._handle_feedback(request)
@@ -465,22 +465,22 @@ class TestFeedbackEndpoint:
         assert "Missing required fields" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_feedback_invalid_feedback_value(self, storage):
-        """Test feedback with invalid feedback value."""
+    async def test_feedback_invalid_rating_value(self, storage):
+        """Test feedback with invalid rating value (not 1-5)."""
         server = FeedbackServer(storage=storage)
 
         request = MagicMock()
         request.json = AsyncMock(return_value={
             "url": "https://example.com",
             "session_id": "test-session",
-            "feedback": "invalid",
+            "rating": 0,  # Invalid - must be 1-5
         })
 
         response = await server._handle_feedback(request)
 
         assert response.status == 400
         data = json.loads(response.text)
-        assert "liked" in data["error"] or "disliked" in data["error"]
+        assert "rating" in data["error"].lower()
 
 
 class TestServerLifecycle:
@@ -740,6 +740,118 @@ class TestMoreEndpoint:
         data = json.loads(response.text)
         assert data["success"] is True
         assert len(data["recommendations"]) == 1
+
+
+class TestConcurrentMoreStreamRequests:
+    """Tests for concurrent /more/stream requests (race condition fix).
+
+    These tests verify that the server can handle multiple concurrent
+    /more/stream requests without crashing. This was fixed by running
+    the server in the main thread's event loop instead of a daemon thread.
+    """
+
+    @pytest.fixture
+    def storage(self):
+        """Create mock storage."""
+        storage = MagicMock(spec=StorageManager)
+        storage.load_all_history.return_value = []
+        storage.load_recent_history.return_value = []
+        storage.append_history = MagicMock()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_concurrent_stream_requests_do_not_crash(self, storage):
+        """Test that multiple concurrent /more/stream requests don't crash.
+
+        This test verifies the fix for GitHub issue #5 where 10+ concurrent
+        requests would crash the server due to subprocess handling in
+        a daemon thread.
+        """
+        from serendipity.models import StatusEvent
+
+        # Counter to track how many requests were processed
+        request_count = 0
+
+        async def mock_stream(session_id, rec_type, count, session_feedback, profile_diffs, custom_directives):
+            nonlocal request_count
+            request_count += 1
+            # Simulate some async work
+            await asyncio.sleep(0.01)
+            yield StatusEvent(event="status", data={"message": f"Processing request {request_count}"})
+            yield StatusEvent(event="complete", data={"success": True, "recommendations": []})
+
+        server = FeedbackServer(storage=storage, on_more_stream_request=mock_stream)
+        port = await server.start(port=59700)
+
+        try:
+            import httpx
+
+            async def make_request(client, i):
+                """Make a single /more/stream request."""
+                response = await client.post(
+                    f"http://localhost:{port}/more/stream",
+                    json={
+                        "session_id": "test-session",
+                        "type": "convergent",
+                        "count": 1,
+                    },
+                    timeout=30.0,
+                )
+                return response.status_code
+
+            async with httpx.AsyncClient() as client:
+                # Launch 10 concurrent requests (this used to crash the server)
+                tasks = [make_request(client, i) for i in range(10)]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Verify all requests succeeded (200 status)
+            success_count = sum(1 for r in results if r == 200)
+            assert success_count == 10, f"Only {success_count}/10 requests succeeded: {results}"
+
+            # Verify server is still healthy
+            async with httpx.AsyncClient() as client:
+                health_response = await client.get(f"http://localhost:{port}/health")
+                assert health_response.status_code == 200
+                data = health_response.json()
+                assert data["status"] == "healthy"
+
+        finally:
+            await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_server_survives_rapid_fire_requests(self, storage):
+        """Test server handles rapid-fire sequential requests."""
+        from serendipity.models import StatusEvent
+
+        async def mock_stream(*args):
+            yield StatusEvent(event="complete", data={"success": True, "recommendations": []})
+
+        server = FeedbackServer(storage=storage, on_more_stream_request=mock_stream)
+        port = await server.start(port=59701)
+
+        try:
+            import httpx
+
+            async with httpx.AsyncClient() as client:
+                # Send 20 rapid-fire requests
+                for i in range(20):
+                    response = await client.post(
+                        f"http://localhost:{port}/more/stream",
+                        json={
+                            "session_id": f"session-{i}",
+                            "type": "convergent",
+                            "count": 1,
+                        },
+                        timeout=10.0,
+                    )
+                    assert response.status_code == 200, f"Request {i} failed"
+
+                # Verify server still healthy
+                health = await client.get(f"http://localhost:{port}/health")
+                assert health.status_code == 200
+
+        finally:
+            await server.stop()
 
 
 class TestMoreStreamEndpoint:

@@ -14,13 +14,17 @@ import tarfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 import yaml
 from copy import deepcopy
 
 if TYPE_CHECKING:
     from serendipity.config.types import TypesConfig
+
+# Rating type for Likert scale (1-5 stars)
+Rating = Literal[1, 2, 3, 4, 5]
+VALID_RATINGS: set[int] = {1, 2, 3, 4, 5}
 
 
 @dataclass
@@ -29,14 +33,17 @@ class HistoryEntry:
 
     Supports both simple format (backwards compatible) and extended format
     with media type, title, thumbnail, and type-specific metadata.
+
+    Rating uses a 4-point Likert scale: 1 (hate), 2 (dislike), 4 (like), 5 (love).
+    No neutral (3) - forced choice. Rating is optional (None = unrated).
     """
 
     url: str
     reason: str
     type: str  # approach: "convergent" or "divergent"
-    feedback: Optional[str]  # None, "liked", or "disliked"
-    timestamp: str
-    session_id: str
+    rating: Optional[int] = None  # None or {1, 2, 4, 5} - Likert scale
+    timestamp: str = ""
+    session_id: str = ""
     extracted: bool = False  # True if this item has been extracted into a rule
 
     # Extended fields (optional for backwards compatibility)
@@ -45,17 +52,44 @@ class HistoryEntry:
     thumbnail_url: Optional[str] = None
     metadata: dict = field(default_factory=dict)
 
+    @property
+    def feedback(self) -> Optional[str]:
+        """Backward-compatible feedback getter.
+
+        Returns:
+            "liked" if rating >= 4, "disliked" if rating <= 2, None if unrated.
+        """
+        if self.rating is None:
+            return None
+        return "liked" if self.rating >= 4 else "disliked"
+
+    @feedback.setter
+    def feedback(self, value: Optional[str]) -> None:
+        """Backward-compatible feedback setter for migration.
+
+        Maps "liked" -> 4 (moderate), "disliked" -> 2 (moderate).
+        """
+        if value is None:
+            self.rating = None
+        elif value == "liked":
+            self.rating = 4
+        elif value == "disliked":
+            self.rating = 2
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         result = {
             "url": self.url,
             "reason": self.reason,
             "type": self.type,
-            "feedback": self.feedback,
+            "rating": self.rating,
             "timestamp": self.timestamp,
             "session_id": self.session_id,
             "extracted": self.extracted,
         }
+        # Include feedback for backward compatibility with older readers
+        if self.rating is not None:
+            result["feedback"] = self.feedback
         # Only include extended fields if they have values
         if self.media_type != "article":
             result["media_type"] = self.media_type
@@ -69,12 +103,27 @@ class HistoryEntry:
 
     @classmethod
     def from_dict(cls, data: dict) -> "HistoryEntry":
-        """Create from dictionary, handling both simple and extended formats."""
+        """Create from dictionary, handling both old feedback and new rating formats.
+
+        Migration: "liked" -> 4, "disliked" -> 2 (moderate defaults).
+        Validates that rating is in {1, 2, 4, 5} if provided.
+        """
+        # Get rating, with migration from old feedback format
+        rating = data.get("rating")
+        if rating is None and data.get("feedback"):
+            # Migrate old format with moderate defaults
+            old_feedback = data.get("feedback")
+            rating = 4 if old_feedback == "liked" else 2 if old_feedback == "disliked" else None
+
+        # Validate rating
+        if rating is not None and rating not in VALID_RATINGS:
+            raise ValueError(f"Invalid rating: {rating}. Must be in {VALID_RATINGS}")
+
         return cls(
             url=data.get("url", ""),
             reason=data.get("reason", ""),
             type=data.get("type", ""),
-            feedback=data.get("feedback"),
+            rating=rating,
             timestamp=data.get("timestamp", ""),
             session_id=data.get("session_id", ""),
             extracted=data.get("extracted", False),
@@ -692,19 +741,35 @@ class StorageManager:
 
         return updated_count
 
-    def get_unextracted_entries(self, feedback: str = None) -> list[HistoryEntry]:
+    def get_unextracted_entries(
+        self,
+        feedback: str = None,
+        min_rating: int = None,
+        max_rating: int = None,
+    ) -> list[HistoryEntry]:
         """Get entries not yet extracted into rules.
 
         Args:
-            feedback: Optional filter by feedback type ("liked" or "disliked")
+            feedback: Legacy filter by feedback type ("liked" or "disliked").
+                     Maps to min_rating=4 for liked, max_rating=2 for disliked.
+            min_rating: Minimum rating filter (inclusive).
+            max_rating: Maximum rating filter (inclusive).
 
         Returns:
-            List of unextracted entries
+            List of unextracted entries matching the filters.
         """
+        # Convert legacy feedback to rating filter
+        if feedback == "liked" and min_rating is None:
+            min_rating = 4
+        elif feedback == "disliked" and max_rating is None:
+            max_rating = 2
+
         entries = self.load_all_history()
         return [
             e for e in entries
-            if not e.extracted and (feedback is None or e.feedback == feedback)
+            if not e.extracted
+            and (min_rating is None or (e.rating is not None and e.rating >= min_rating))
+            and (max_rating is None or (e.rating is not None and e.rating <= max_rating))
         ]
 
     def append_history(self, entries: list[HistoryEntry]) -> None:
@@ -744,17 +809,23 @@ class StorageManager:
         # Return most recent entries
         return entries[-limit:] if entries else []
 
-    def update_feedback(self, url: str, session_id: str, feedback: str) -> bool:
-        """Update feedback for a specific recommendation.
+    def update_rating(self, url: str, session_id: str, rating: int) -> bool:
+        """Update rating for a specific recommendation.
 
         Args:
             url: URL of the recommendation
             session_id: Session ID of the recommendation
-            feedback: Feedback value ("liked" or "disliked")
+            rating: Rating value (1, 2, 4, or 5)
 
         Returns:
             True if entry was found and updated, False otherwise.
+
+        Raises:
+            ValueError: If rating is not in {1, 2, 4, 5}.
         """
+        if rating not in VALID_RATINGS:
+            raise ValueError(f"Invalid rating: {rating}. Must be in {VALID_RATINGS}")
+
         if not self.history_path.exists():
             return False
 
@@ -763,7 +834,7 @@ class StorageManager:
 
         for entry in entries:
             if entry.url == url and entry.session_id == session_id:
-                entry.feedback = feedback
+                entry.rating = rating
                 updated = True
                 break
 
@@ -774,13 +845,31 @@ class StorageManager:
 
         return updated
 
+    def update_feedback(self, url: str, session_id: str, feedback: str) -> bool:
+        """Backward-compatible method for binary feedback.
+
+        Maps "liked" -> 4, "disliked" -> 2.
+        """
+        rating = 4 if feedback == "liked" else 2 if feedback == "disliked" else None
+        if rating is None:
+            return False
+        return self.update_rating(url, session_id, rating)
+
+    def get_positive_entries(self) -> list[HistoryEntry]:
+        """Get all entries with positive rating (4-5)."""
+        return [e for e in self.load_all_history() if e.rating is not None and e.rating >= 4]
+
+    def get_negative_entries(self) -> list[HistoryEntry]:
+        """Get all entries with negative rating (1-2)."""
+        return [e for e in self.load_all_history() if e.rating is not None and e.rating <= 2]
+
     def get_liked_entries(self) -> list[HistoryEntry]:
-        """Get all liked history entries."""
-        return [e for e in self.load_all_history() if e.feedback == "liked"]
+        """Get all liked history entries (rating >= 4). Backward-compatible alias."""
+        return self.get_positive_entries()
 
     def get_disliked_entries(self) -> list[HistoryEntry]:
-        """Get all disliked history entries."""
-        return [e for e in self.load_all_history() if e.feedback == "disliked"]
+        """Get all disliked history entries (rating <= 2). Backward-compatible alias."""
+        return self.get_negative_entries()
 
     def clear_history(self) -> None:
         """Clear all history."""
@@ -800,7 +889,7 @@ class StorageManager:
                            Called with (message: str) when context is too long.
 
         Returns:
-            String with history context (learnings, recent items, unextracted likes/dislikes).
+            String with history context (learnings, recent items, unextracted ratings).
         """
         history_parts = []
 
@@ -814,26 +903,43 @@ class StorageManager:
         if recent:
             recent_lines = []
             for e in recent:
-                feedback_str = f", {e.feedback}" if e.feedback else ", no feedback"
-                recent_lines.append(f"- {e.url} ({e.type}{feedback_str})")
+                rating_str = f", rating={e.rating}" if e.rating else ", unrated"
+                recent_lines.append(f"- {e.url} ({e.type}{rating_str})")
             history_parts.append(
                 "Recently shown (do not repeat these URLs):\n" + "\n".join(recent_lines)
             )
 
-        # 3. Unextracted liked entries (not yet in learnings)
-        unextracted_liked = self.get_unextracted_entries("liked")
-        if unextracted_liked:
-            liked_lines = [f"- {e.url} - \"{e.reason[:100]}...\"" for e in unextracted_liked]
+        # 3. Unextracted entries with intensity-aware groupings
+        # Loved items (5/5) - strong positive signal
+        loved = self.get_unextracted_entries(min_rating=5, max_rating=5)
+        if loved:
+            loved_lines = [f'- {e.url} - "{e.reason[:100]}..."' for e in loved]
             history_parts.append(
-                "Items you've liked (not yet in learnings):\n" + "\n".join(liked_lines)
+                "Items you LOVED (5/5 - strong positive signal):\n" + "\n".join(loved_lines)
             )
 
-        # 4. Unextracted disliked entries (not yet in learnings)
-        unextracted_disliked = self.get_unextracted_entries("disliked")
-        if unextracted_disliked:
-            disliked_lines = [f"- {e.url}" for e in unextracted_disliked]
+        # Liked items (4/5)
+        liked = self.get_unextracted_entries(min_rating=4, max_rating=4)
+        if liked:
+            liked_lines = [f"- {e.url}" for e in liked]
             history_parts.append(
-                "Items you didn't like (not yet in learnings):\n" + "\n".join(disliked_lines)
+                "Items you liked (4/5):\n" + "\n".join(liked_lines)
+            )
+
+        # Neutral items (3/5) - not much signal
+        neutral = self.get_unextracted_entries(min_rating=3, max_rating=3)
+        if neutral:
+            neutral_lines = [f"- {e.url}" for e in neutral]
+            history_parts.append(
+                "Items you were neutral about (3/5):\n" + "\n".join(neutral_lines)
+            )
+
+        # Disliked items (1-2/5) - avoid similar
+        disliked = self.get_unextracted_entries(max_rating=2)
+        if disliked:
+            disliked_lines = [f"- {e.url}" for e in disliked]
+            history_parts.append(
+                "Items you didn't like (1-2/5 - avoid similar):\n" + "\n".join(disliked_lines)
             )
 
         if not history_parts:

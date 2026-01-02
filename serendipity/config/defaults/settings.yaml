@@ -89,6 +89,45 @@ media:
         required: false
     # preference: "trying to listen more during commutes"
 
+  music:
+    display_name: "Music"
+    enabled: true
+    sources:
+      - tool: WebSearch
+        hints: "{query} music album OR song"
+    prompt_hint: "Albums, songs, playlists. Genre-crossing encouraged."
+    metadata_schema:
+      - name: artist
+        required: true
+      - name: album
+        required: false
+
+  art:
+    display_name: "Art"
+    enabled: true
+    sources:
+      - tool: WebSearch
+        hints: "{query} artist OR artwork OR exhibition"
+    prompt_hint: "Visual art, paintings, sculptures, installations. Include artist context."
+    metadata_schema:
+      - name: artist
+        required: true
+      - name: medium
+        required: false
+
+  architecture:
+    display_name: "Architecture"
+    enabled: true
+    sources:
+      - tool: WebSearch
+        hints: "{query} architecture OR building OR architect"
+    prompt_hint: "Buildings, structures, architects, urban design. Include location and era."
+    metadata_schema:
+      - name: architect
+        required: false
+      - name: location
+        required: false
+
 # OUTPUT - Where and how to deliver recommendations
 # Separates format (how to render) from destination (where to send)
 output:

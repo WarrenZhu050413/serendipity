@@ -164,14 +164,15 @@ class PromptBuilder:
         lines.append("<recommendations>")
         lines.append("```json")
         lines.append("{")
+        lines.append('  "batch_title": "A short evocative title for these recommendations",')
 
         for i, approach in enumerate(approaches):
             lines.append(f'  "{approach}": [')
             lines.append('    {')
             lines.append('      "url": "https://...",')
+            lines.append('      "title": "Name of the content (required)",')
             lines.append('      "reason": "Brief reason (1-2 sentences)",')
             lines.append(f'      "type": "{media_types[0] if media_types else "article"}",')
-            lines.append('      "title": "Optional title",')
             lines.append('      "thumbnail_url": "Optional image URL",')
             lines.append('      "metadata": {"key": "value"}')
             lines.append('    }')

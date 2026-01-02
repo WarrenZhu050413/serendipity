@@ -6,13 +6,13 @@ from serendipity.search import HistorySearcher
 from serendipity.storage import HistoryEntry
 
 
-def make_entry(url: str, reason: str, feedback: str = "liked", extracted: bool = False) -> HistoryEntry:
+def make_entry(url: str, reason: str, rating: int = 4, extracted: bool = False) -> HistoryEntry:
     """Helper to create test entries."""
     return HistoryEntry(
         url=url,
         reason=reason,
         type="convergent",
-        feedback=feedback,
+        rating=rating,
         timestamp="2024-01-15T10:30:00Z",
         session_id="abc123",
         extracted=extracted,
@@ -101,11 +101,11 @@ class TestHistorySearcher:
         assert len(results) == 3
 
     def test_filter_by_feedback(self):
-        """Test filtering by feedback type."""
+        """Test filtering by feedback type (uses rating >= 4 for liked, <= 2 for disliked)."""
         entries = [
-            make_entry("https://liked1.com", "liked content 1", feedback="liked"),
-            make_entry("https://disliked1.com", "disliked content", feedback="disliked"),
-            make_entry("https://liked2.com", "liked content 2", feedback="liked"),
+            make_entry("https://liked1.com", "liked content 1", rating=4),
+            make_entry("https://disliked1.com", "disliked content", rating=2),
+            make_entry("https://liked2.com", "liked content 2", rating=5),
         ]
         searcher = HistorySearcher(entries)
 
@@ -131,9 +131,9 @@ class TestHistorySearcher:
     def test_chained_filters(self):
         """Test chaining multiple filters."""
         entries = [
-            make_entry("https://liked-extracted.com", "liked extracted", feedback="liked", extracted=True),
-            make_entry("https://liked-unextracted.com", "liked unextracted", feedback="liked", extracted=False),
-            make_entry("https://disliked-unextracted.com", "disliked", feedback="disliked", extracted=False),
+            make_entry("https://liked-extracted.com", "liked extracted", rating=4, extracted=True),
+            make_entry("https://liked-unextracted.com", "liked unextracted", rating=5, extracted=False),
+            make_entry("https://disliked-unextracted.com", "disliked", rating=2, extracted=False),
         ]
         searcher = HistorySearcher(entries)
 
@@ -145,10 +145,10 @@ class TestHistorySearcher:
     def test_search_on_filtered(self):
         """Test searching on a filtered searcher."""
         entries = [
-            make_entry("https://liked-japanese.com", "japanese minimalism", feedback="liked"),
-            make_entry("https://liked-tech.com", "tech news articles", feedback="liked"),
-            make_entry("https://liked-cooking.com", "french cooking tips", feedback="liked"),
-            make_entry("https://disliked-japanese.com", "japanese anime shows", feedback="disliked"),
+            make_entry("https://liked-japanese.com", "japanese minimalism", rating=4),
+            make_entry("https://liked-tech.com", "tech news articles", rating=5),
+            make_entry("https://liked-cooking.com", "french cooking tips", rating=4),
+            make_entry("https://disliked-japanese.com", "japanese anime shows", rating=2),
         ]
         searcher = HistorySearcher(entries)
 

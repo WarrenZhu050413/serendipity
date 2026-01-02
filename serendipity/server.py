@@ -22,7 +22,7 @@ from serendipity.learnings_parser import (
     serialize_learnings,
     update_learning_by_id,
 )
-from serendipity.storage import HistoryEntry, StorageManager, VersionInfo
+from serendipity.storage import HistoryEntry, StorageManager, VersionInfo, VALID_RATINGS
 
 
 class FeedbackServer:
@@ -245,7 +245,8 @@ class FeedbackServer:
                 "url": e.url,
                 "reason": e.reason,
                 "type": e.type,
-                "feedback": e.feedback,
+                "rating": e.rating,
+                "feedback": e.feedback,  # Backward compat (derived from rating)
                 "timestamp": e.timestamp,
             }
             for e in recent_history
@@ -320,9 +321,16 @@ class FeedbackServer:
         )
 
     async def _handle_feedback(self, request: web.Request) -> web.Response:
-        """Handle feedback submission.
+        """Handle feedback/rating submission.
 
-        Expected JSON body:
+        Expected JSON body (new format):
+        {
+            "url": "https://...",
+            "session_id": "abc123",
+            "rating": 1 | 2 | 4 | 5
+        }
+
+        Also accepts legacy format:
         {
             "url": "https://...",
             "session_id": "abc123",
@@ -342,27 +350,49 @@ class FeedbackServer:
 
         url = data.get("url")
         session_id = data.get("session_id")
+        rating = data.get("rating")
         feedback = data.get("feedback")
 
-        if not all([url, session_id, feedback]):
+        if not all([url, session_id]):
             return web.json_response(
-                {"error": "Missing required fields: url, session_id, feedback"},
+                {"error": "Missing required fields: url, session_id"},
                 status=400,
                 headers=self._cors_headers(),
             )
 
-        if feedback not in ("liked", "disliked"):
+        if rating is None and feedback is None:
             return web.json_response(
-                {"error": "feedback must be 'liked' or 'disliked'"},
+                {"error": "Must provide rating (1, 2, 4, 5) or feedback (liked/disliked)"},
                 status=400,
                 headers=self._cors_headers(),
             )
 
-        # Update feedback in history
-        updated = self.storage.update_feedback(url, session_id, feedback)
+        # Convert legacy feedback to rating
+        if rating is None:
+            if feedback == "liked":
+                rating = 4
+            elif feedback == "disliked":
+                rating = 2
+            else:
+                return web.json_response(
+                    {"error": "feedback must be 'liked' or 'disliked'"},
+                    status=400,
+                    headers=self._cors_headers(),
+                )
+
+        # Validate rating
+        if not isinstance(rating, int) or rating not in VALID_RATINGS:
+            return web.json_response(
+                {"error": f"rating must be one of {sorted(VALID_RATINGS)}"},
+                status=400,
+                headers=self._cors_headers(),
+            )
+
+        # Update rating in history
+        updated = self.storage.update_rating(url, session_id, rating)
 
         return web.json_response(
-            {"success": updated, "url": url, "feedback": feedback},
+            {"success": updated, "url": url, "rating": rating},
             headers=self._cors_headers(),
         )
 

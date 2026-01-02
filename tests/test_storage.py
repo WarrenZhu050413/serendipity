@@ -18,12 +18,13 @@ class TestHistoryEntry:
             url="https://example.com",
             reason="Great content",
             type="convergent",
-            feedback="liked",
+            rating=4,
             timestamp="2024-01-15T10:30:00Z",
             session_id="abc123",
         )
         assert entry.url == "https://example.com"
-        assert entry.feedback == "liked"
+        assert entry.rating == 4
+        assert entry.feedback == "liked"  # Backward compat property
         assert entry.extracted is False  # Default value
 
     def test_extracted_field_default(self):
@@ -32,7 +33,7 @@ class TestHistoryEntry:
             url="https://example.com",
             reason="test",
             type="convergent",
-            feedback=None,
+            rating=None,
             timestamp="2024-01-15T10:30:00Z",
             session_id="abc123",
         )
@@ -44,7 +45,7 @@ class TestHistoryEntry:
             url="https://example.com",
             reason="test",
             type="convergent",
-            feedback="liked",
+            rating=4,
             timestamp="2024-01-15T10:30:00Z",
             session_id="abc123",
             extracted=True,
@@ -57,18 +58,35 @@ class TestHistoryEntry:
             url="https://example.com",
             reason="Great content",
             type="convergent",
-            feedback="liked",
+            rating=4,
             timestamp="2024-01-15T10:30:00Z",
             session_id="abc123",
             extracted=True,
         )
         d = entry.to_dict()
         assert d["url"] == "https://example.com"
+        assert d["rating"] == 4
         assert d["extracted"] is True
         assert "extracted" in d
 
     def test_from_dict(self):
-        """Test deserializing from dictionary."""
+        """Test deserializing from dictionary with rating."""
+        d = {
+            "url": "https://example.com",
+            "reason": "Great content",
+            "type": "convergent",
+            "rating": 4,
+            "timestamp": "2024-01-15T10:30:00Z",
+            "session_id": "abc123",
+            "extracted": True,
+        }
+        entry = HistoryEntry.from_dict(d)
+        assert entry.url == "https://example.com"
+        assert entry.rating == 4
+        assert entry.extracted is True
+
+    def test_from_dict_legacy_feedback_liked(self):
+        """Test deserializing from old feedback='liked' format (migrates to rating=4)."""
         d = {
             "url": "https://example.com",
             "reason": "Great content",
@@ -76,11 +94,24 @@ class TestHistoryEntry:
             "feedback": "liked",
             "timestamp": "2024-01-15T10:30:00Z",
             "session_id": "abc123",
-            "extracted": True,
         }
         entry = HistoryEntry.from_dict(d)
-        assert entry.url == "https://example.com"
-        assert entry.extracted is True
+        assert entry.rating == 4  # Migrated from "liked"
+        assert entry.feedback == "liked"  # Backward compat property
+
+    def test_from_dict_legacy_feedback_disliked(self):
+        """Test deserializing from old feedback='disliked' format (migrates to rating=2)."""
+        d = {
+            "url": "https://example.com",
+            "reason": "Great content",
+            "type": "convergent",
+            "feedback": "disliked",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "session_id": "abc123",
+        }
+        entry = HistoryEntry.from_dict(d)
+        assert entry.rating == 2  # Migrated from "disliked"
+        assert entry.feedback == "disliked"  # Backward compat property
 
     def test_from_dict_missing_extracted(self):
         """Test deserializing from dict without extracted field (backwards compat)."""
@@ -88,7 +119,7 @@ class TestHistoryEntry:
             "url": "https://example.com",
             "reason": "Great content",
             "type": "convergent",
-            "feedback": "liked",
+            "rating": 5,
             "timestamp": "2024-01-15T10:30:00Z",
             "session_id": "abc123",
         }
@@ -173,7 +204,7 @@ class TestStorageManager:
                 url="https://example1.com",
                 reason="test1",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="abc123",
             ),
@@ -181,7 +212,7 @@ class TestStorageManager:
                 url="https://example2.com",
                 reason="test2",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:31:00Z",
                 session_id="abc123",
             ),
@@ -204,7 +235,7 @@ class TestStorageManager:
                 url=f"https://example{i}.com",
                 reason=f"test{i}",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="abc123",
             )
@@ -231,7 +262,7 @@ class TestStorageManager:
                 url="https://example1.com",
                 reason="test1",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="abc123",
                 extracted=True,
@@ -240,7 +271,7 @@ class TestStorageManager:
                 url="https://example2.com",
                 reason="test2",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:31:00Z",
                 session_id="abc123",
                 extracted=False,
@@ -252,14 +283,14 @@ class TestStorageManager:
         assert len(unextracted) == 1
         assert unextracted[0].url == "https://example2.com"
 
-    def test_get_unextracted_entries_by_feedback(self, storage):
-        """Test getting unextracted entries filtered by feedback."""
+    def test_get_unextracted_entries_by_rating(self, storage):
+        """Test getting unextracted entries filtered by rating."""
         entries = [
             HistoryEntry(
                 url="https://liked1.com",
                 reason="test",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="abc123",
             ),
@@ -267,26 +298,33 @@ class TestStorageManager:
                 url="https://disliked1.com",
                 reason="test",
                 type="divergent",
-                feedback="disliked",
+                rating=2,
                 timestamp="2024-01-15T10:31:00Z",
                 session_id="abc123",
             ),
             HistoryEntry(
-                url="https://liked2.com",
+                url="https://loved1.com",
                 reason="test",
                 type="convergent",
-                feedback="liked",
+                rating=5,
                 timestamp="2024-01-15T10:32:00Z",
                 session_id="abc123",
             ),
         ]
         storage.append_history(entries)
 
-        liked = storage.get_unextracted_entries("liked")
-        assert len(liked) == 2
+        # Get positive ratings (4-5)
+        positive = storage.get_unextracted_entries(min_rating=4)
+        assert len(positive) == 2
 
-        disliked = storage.get_unextracted_entries("disliked")
-        assert len(disliked) == 1
+        # Get negative ratings (1-2)
+        negative = storage.get_unextracted_entries(max_rating=2)
+        assert len(negative) == 1
+
+        # Get loved only (5)
+        loved = storage.get_unextracted_entries(min_rating=5, max_rating=5)
+        assert len(loved) == 1
+        assert loved[0].url == "https://loved1.com"
 
     def test_build_history_context_with_learnings(self, storage):
         """Test that build_history_context includes learnings."""
@@ -303,7 +341,7 @@ class TestStorageManager:
                 url="https://extracted.com",
                 reason="extracted item",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="abc123",
                 extracted=True,
@@ -312,7 +350,7 @@ class TestStorageManager:
                 url="https://unextracted.com",
                 reason="unextracted item",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:31:00Z",
                 session_id="abc123",
                 extracted=False,
@@ -321,15 +359,15 @@ class TestStorageManager:
         storage.append_history(entries)
 
         context = storage.build_history_context()
-        # Unextracted should be in "Items you've liked (not yet in learnings)"
+        # Unextracted should be in liked section
         assert "https://unextracted.com" in context
         # Extracted should NOT be in the liked section (but may be in recent)
-        # Check that it's not in the "not yet in learnings" section
-        assert "extracted item" not in context or "not yet in learnings" not in context.split("extracted.com")[0]
+        # Check that it's not in the "liked" section
+        assert "extracted item" not in context or "Items you liked" not in context.split("extracted.com")[0]
 
 
-class TestUpdateFeedback:
-    """Tests for update_feedback method."""
+class TestUpdateRating:
+    """Tests for update_rating method."""
 
     @pytest.fixture
     def temp_dir(self):
@@ -342,65 +380,83 @@ class TestUpdateFeedback:
         """Create a StorageManager with temp directory."""
         return StorageManager(base_dir=temp_dir)
 
-    def test_update_feedback_no_history(self, storage):
-        """Test updating feedback when no history file exists."""
-        result = storage.update_feedback("https://example.com", "session123", "liked")
+    def test_update_rating_no_history(self, storage):
+        """Test updating rating when no history file exists."""
+        result = storage.update_rating("https://example.com", "session123", 4)
         assert result is False
 
-    def test_update_feedback_entry_found(self, storage):
-        """Test updating feedback for an existing entry."""
+    def test_update_rating_entry_found(self, storage):
+        """Test updating rating for an existing entry."""
         entries = [
             HistoryEntry(
                 url="https://example.com",
                 reason="test",
                 type="convergent",
-                feedback=None,
+                rating=None,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="session123",
             ),
         ]
         storage.append_history(entries)
 
-        result = storage.update_feedback("https://example.com", "session123", "liked")
+        result = storage.update_rating("https://example.com", "session123", 5)
         assert result is True
 
         # Verify the update
         loaded = storage.load_all_history()
-        assert loaded[0].feedback == "liked"
+        assert loaded[0].rating == 5
 
-    def test_update_feedback_entry_not_found(self, storage):
-        """Test updating feedback when entry doesn't exist."""
+    def test_update_rating_entry_not_found(self, storage):
+        """Test updating rating when entry doesn't exist."""
         entries = [
             HistoryEntry(
                 url="https://other.com",
                 reason="test",
                 type="convergent",
-                feedback=None,
+                rating=None,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="session123",
             ),
         ]
         storage.append_history(entries)
 
-        result = storage.update_feedback("https://example.com", "session123", "liked")
+        result = storage.update_rating("https://example.com", "session123", 4)
         assert result is False
 
-    def test_update_feedback_wrong_session(self, storage):
-        """Test updating feedback when session ID doesn't match."""
+    def test_update_rating_wrong_session(self, storage):
+        """Test updating rating when session ID doesn't match."""
         entries = [
             HistoryEntry(
                 url="https://example.com",
                 reason="test",
                 type="convergent",
-                feedback=None,
+                rating=None,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="session123",
             ),
         ]
         storage.append_history(entries)
 
-        result = storage.update_feedback("https://example.com", "wrong-session", "liked")
+        result = storage.update_rating("https://example.com", "wrong-session", 4)
         assert result is False
+
+    def test_update_rating_validates_value(self, storage):
+        """Test that update_rating validates rating value."""
+        entries = [
+            HistoryEntry(
+                url="https://example.com",
+                reason="test",
+                type="convergent",
+                rating=None,
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+            ),
+        ]
+        storage.append_history(entries)
+
+        # Invalid rating (0 is not a valid star count)
+        with pytest.raises(ValueError, match="Invalid rating"):
+            storage.update_rating("https://example.com", "session123", 0)
 
 
 class TestClearHistory:
@@ -424,7 +480,7 @@ class TestClearHistory:
                 url="https://example.com",
                 reason="test",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="session123",
             ),
@@ -468,7 +524,7 @@ class TestBuildHistoryContextEdgeCases:
                 url="https://disliked.com",
                 reason="not my taste",
                 type="divergent",
-                feedback="disliked",
+                rating=2,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="session123",
                 extracted=False,
@@ -482,7 +538,8 @@ class TestBuildHistoryContextEdgeCases:
 
     def test_build_history_context_warning_callback(self, storage):
         """Test that warning callback is called for large history."""
-        # Create many entries to exceed word limit
+        # Create many entries with rating=5 (loved) to include reasons in output
+        # The "loved" section includes reason text, which increases word count
         entries = []
         for i in range(500):
             entries.append(
@@ -490,7 +547,7 @@ class TestBuildHistoryContextEdgeCases:
                     url=f"https://example{i}.com",
                     reason="This is a long reason " * 20,  # ~80 words per entry
                     type="convergent",
-                    feedback="liked",
+                    rating=5,  # Use "loved" rating to include reason in output
                     timestamp="2024-01-15T10:30:00Z",
                     session_id="session123",
                     extracted=False,
@@ -508,14 +565,14 @@ class TestBuildHistoryContextEdgeCases:
         assert len(warnings) == 1
         assert "words" in warnings[0]
 
-    def test_build_history_context_mixed_feedback(self, storage):
-        """Test build_history_context with both liked and disliked entries."""
+    def test_build_history_context_mixed_ratings(self, storage):
+        """Test build_history_context with liked and disliked entries."""
         entries = [
             HistoryEntry(
                 url="https://liked.com",
                 reason="great content",
                 type="convergent",
-                feedback="liked",
+                rating=4,
                 timestamp="2024-01-15T10:30:00Z",
                 session_id="session123",
                 extracted=False,
@@ -524,7 +581,7 @@ class TestBuildHistoryContextEdgeCases:
                 url="https://disliked.com",
                 reason="not for me",
                 type="divergent",
-                feedback="disliked",
+                rating=2,
                 timestamp="2024-01-15T10:31:00Z",
                 session_id="session123",
                 extracted=False,
@@ -535,7 +592,48 @@ class TestBuildHistoryContextEdgeCases:
         context = storage.build_history_context()
         assert "https://liked.com" in context
         assert "https://disliked.com" in context
-        assert "Items you've liked" in context
+        assert "Items you liked" in context
+        assert "Items you didn't like" in context
+
+    def test_build_history_context_intensity_groupings(self, storage):
+        """Test build_history_context groups by rating intensity."""
+        entries = [
+            HistoryEntry(
+                url="https://loved.com",
+                reason="amazing",
+                type="convergent",
+                rating=5,
+                timestamp="2024-01-15T10:30:00Z",
+                session_id="session123",
+                extracted=False,
+            ),
+            HistoryEntry(
+                url="https://liked.com",
+                reason="good",
+                type="convergent",
+                rating=4,
+                timestamp="2024-01-15T10:31:00Z",
+                session_id="session123",
+                extracted=False,
+            ),
+            HistoryEntry(
+                url="https://hated.com",
+                reason="terrible",
+                type="divergent",
+                rating=1,
+                timestamp="2024-01-15T10:32:00Z",
+                session_id="session123",
+                extracted=False,
+            ),
+        ]
+        storage.append_history(entries)
+
+        context = storage.build_history_context()
+        assert "https://loved.com" in context
+        assert "https://liked.com" in context
+        assert "https://hated.com" in context
+        assert "Items you LOVED" in context
+        assert "Items you liked" in context
         assert "Items you didn't like" in context
 
 

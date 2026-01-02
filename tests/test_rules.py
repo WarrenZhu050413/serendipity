@@ -22,7 +22,7 @@ def make_entry(url: str, reason: str) -> HistoryEntry:
         url=url,
         reason=reason,
         type="convergent",
-        feedback="liked",
+        rating=4,
         timestamp="2024-01-15T10:30:00Z",
         session_id="abc123",
     )

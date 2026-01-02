@@ -33,8 +33,8 @@ class TestGetTemplate:
         template = get_template("base.html")
         # Should have CSS placeholder
         assert "{css}" in template
-        # Should have recommendations placeholder
-        assert "{recommendations_html}" in template
+        # Should have initial batch placeholder (title + pairings + cards)
+        assert "{initial_batch_html}" in template
         # Should have session ID placeholder
         assert "{session_id}" in template
 
@@ -142,7 +142,7 @@ class TestResourcesIntegration:
         assert "{type_guidance}" in prompt
         # Template should have the placeholders the system expects
         assert "{css}" in template
-        assert "{recommendations_html}" in template
+        assert "{initial_batch_html}" in template
 
     def test_settings_yaml_parseable(self):
         """Test that default settings.yaml can be parsed."""

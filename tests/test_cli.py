@@ -98,7 +98,7 @@ class TestHistoryCommand:
                     url="https://example1.com",
                     reason="test reason 1",
                     type="convergent",
-                    feedback="liked",
+                    rating=4,
                     timestamp="2024-01-15T10:30:00Z",
                     session_id="abc123",
                 ),
@@ -106,7 +106,7 @@ class TestHistoryCommand:
                     url="https://example2.com",
                     reason="test reason 2",
                     type="divergent",
-                    feedback="disliked",
+                    rating=2,
                     timestamp="2024-01-15T10:31:00Z",
                     session_id="abc123",
                 ),
@@ -168,7 +168,12 @@ class TestSettingsCommand:
             assert "Approaches" in result.stdout
 
     def test_settings_show_displays_all_sections(self, temp_storage):
-        """Test that settings shows all configuration sections."""
+        """Test that settings shows all configuration sections.
+
+        This test ensures all major settings.yaml sections are displayed
+        in the settings command output. If you add a new section to the
+        defaults, add a check here.
+        """
         storage, tmpdir = temp_storage
         with patch("serendipity.cli.StorageManager") as mock_cls:
             mock_cls.return_value = storage
@@ -178,13 +183,32 @@ class TestSettingsCommand:
             assert "model" in result.stdout
             assert "total_count" in result.stdout
             assert "feedback_server_port" in result.stdout
-            # Sections
+            assert "thinking_tokens" in result.stdout
+            # Sections - all major sections must be displayed
             assert "Approaches" in result.stdout
             assert "Media Types" in result.stdout
+            assert "Pairings" in result.stdout
             assert "Context Sources" in result.stdout
-            # Default values
+            assert "Prompts" in result.stdout
+            assert "Stylesheet" in result.stdout
+            # Default approach types
             assert "convergent" in result.stdout
             assert "divergent" in result.stdout
+            # Default media types (including new art/architecture)
+            assert "article" in result.stdout
+            assert "youtube" in result.stdout
+            assert "book" in result.stdout
+            assert "podcast" in result.stdout
+            assert "music" in result.stdout
+            assert "art" in result.stdout
+            assert "architecture" in result.stdout
+            # Default pairings
+            assert "music" in result.stdout  # pairing
+            assert "food" in result.stdout
+            assert "exercise" in result.stdout
+            assert "tip" in result.stdout
+            assert "quote" in result.stdout
+            assert "action" in result.stdout
 
     def test_settings_reset(self, temp_storage):
         """Test resetting settings (with confirmation bypass)."""

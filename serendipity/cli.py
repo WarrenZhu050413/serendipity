@@ -892,7 +892,6 @@ def _save_to_history(
             url=rec.url,
             reason=rec.reason,
             type="convergent",
-            feedback=None,
             timestamp=timestamp,
             session_id=result.session_id,
         ))
@@ -902,7 +901,6 @@ def _save_to_history(
             url=rec.url,
             reason=rec.reason,
             type="divergent",
-            feedback=None,
             timestamp=timestamp,
             session_id=result.session_id,
         ))
@@ -910,29 +908,32 @@ def _save_to_history(
     storage.append_history(entries)
 
 
-def _start_feedback_server(
+async def _run_server_in_main(
     storage: StorageManager,
     agent: SerendipityAgent,
     port: int,
-    html_content: Optional[str] = None,
-    static_dir: Optional[Path] = None,
-    user_input: Optional[str] = None,
-    session_id: Optional[str] = None,
-) -> tuple[threading.Thread, int]:
-    """Start the feedback server in a background thread.
+    static_dir: Path,
+    user_input: str,
+    session_id: str,
+    html_path: Path,
+) -> None:
+    """Run feedback server in main thread's event loop.
 
-    Returns:
-        Tuple of (thread, actual_port) where actual_port may differ from port if it was taken.
+    This ensures all subprocess spawning (from /more/stream) happens in the
+    main thread, avoiding race conditions with SIGCHLD signal handling.
+
+    Args:
+        storage: Storage manager for history/feedback
+        agent: Serendipity agent for handling more requests
+        port: Preferred server port
+        static_dir: Directory containing HTML files to serve
+        user_input: User's original input for context panel
+        session_id: Session ID from discovery
+        html_path: Path to the generated HTML file
     """
-    import queue
+    import webbrowser
 
     from serendipity.server import FeedbackServer
-
-    # Queue to communicate actual port back from thread
-    port_queue: queue.Queue[int | Exception] = queue.Queue()
-
-    # Store reference to server for registering session input
-    server_ref = [None]
 
     async def on_more_request(
         session_id: str,
@@ -963,7 +964,6 @@ def _start_feedback_server(
                     url=rec.url,
                     reason=rec.reason,
                     type=rec_type,
-                    feedback=None,
                     timestamp=timestamp,
                     session_id=session_id,
                 ))
@@ -985,12 +985,7 @@ def _start_feedback_server(
         custom_directives: str = "",
     ):
         """Handle streaming 'more' requests with SSE. Yields StatusEvent objects."""
-        from serendipity.models import StatusEvent
-
         console.print(f"[dim]Getting {count} more {rec_type} recommendations (streaming)...[/dim]")
-
-        # Collect recommendations for history
-        recommendations = []
 
         async for event in agent.get_more_stream(
             session_id, rec_type, count, session_feedback, profile_diffs, custom_directives
@@ -1006,8 +1001,7 @@ def _start_feedback_server(
                     entries.append(HistoryEntry(
                         url=rec_data.get("url", ""),
                         reason=rec_data.get("reason", ""),
-                        type=rec_data.get("type", rec_type.split(",")[0]),  # Use type from rec or fallback
-                        feedback=None,
+                        type=rec_data.get("type", rec_type.split(",")[0]),
                         timestamp=timestamp,
                         session_id=session_id,
                     ))
@@ -1016,90 +1010,43 @@ def _start_feedback_server(
 
             yield event
 
-    async def run_server():
-        server = FeedbackServer(
-            storage=storage,
-            on_more_request=on_more_request,
-            on_more_stream_request=on_more_stream_request,
-            idle_timeout=600,  # 10 minutes
-            html_content=html_content,
-            static_dir=static_dir,
-        )
-        server_ref[0] = server
+    # Create and configure server
+    server = FeedbackServer(
+        storage=storage,
+        on_more_request=on_more_request,
+        on_more_stream_request=on_more_stream_request,
+        idle_timeout=600,  # 10 minutes
+        static_dir=static_dir,
+    )
 
-        # Register user input for context panel
-        if session_id and user_input:
-            server.register_session_input(session_id, user_input)
+    # Register user input for context panel
+    if session_id and user_input:
+        server.register_session_input(session_id, user_input)
 
-        # Start server and get actual port (may differ if preferred was taken)
-        actual_port = await server.start(port)
-        port_queue.put(actual_port)
+    # Start server and get actual port
+    actual_port = await server.start(port)
 
-        # Keep running until interrupted
-        try:
-            while True:
-                await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            await server.stop()
+    # Open browser
+    filename = html_path.name
+    url = f"http://localhost:{actual_port}/{filename}"
+    webbrowser.open(url)
 
-    def thread_target():
-        import sys
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    console.print(success(f"Opened in browser: {url}"))
+    console.print(f"[dim]HTML file: {html_path}[/dim]")
+    if actual_port != port:
+        console.print(f"[yellow]Port {port} was in use, using port {actual_port}[/yellow]")
+    console.print(f"[dim]Feedback server running on localhost:{actual_port}[/dim]")
+    console.print("[dim]Press Ctrl+C to stop the server when done.[/dim]")
 
-        # Log thread start
-        console.print(f"[dim]Server thread started (thread={threading.current_thread().name})[/dim]")
-
-        def handle_exception(loop, context):
-            """Catch unhandled exceptions in the event loop."""
-            msg = context.get("exception", context["message"])
-            console.print(f"[red]Event loop exception: {msg}[/red]")
-            import traceback
-            if "exception" in context:
-                traceback.print_exception(type(context["exception"]), context["exception"], context["exception"].__traceback__)
-
-        loop.set_exception_handler(handle_exception)
-
-        try:
-            loop.run_until_complete(run_server())
-        except KeyboardInterrupt:
-            pass
-        except BaseException as e:
-            import traceback
-            console.print(f"[red]Server thread crashed: {type(e).__name__}: {e}[/red]")
-            traceback.print_exc()
-            port_queue.put(e)  # Signal error to main thread
-        finally:
-            console.print(f"[yellow]Server thread exiting[/yellow]")
-
-    thread = threading.Thread(target=thread_target, daemon=True)
-    thread.start()
-
-    # Wait for actual port from server thread
-    import time
+    # Keep running until interrupted
     try:
-        result = port_queue.get(timeout=5.0)
-        if isinstance(result, Exception):
-            raise result
-        actual_port = result
-    except queue.Empty:
-        console.print("[yellow]Warning: Feedback server may not be ready[/yellow]")
-        actual_port = port  # Fall back to requested port
-
-    # Verify server is responding on actual port
-    import urllib.request
-    for _ in range(10):  # Try for up to 1 second
-        try:
-            req = urllib.request.Request(f"http://localhost:{actual_port}/health")
-            with urllib.request.urlopen(req, timeout=1) as resp:
-                if resp.status == 200:
-                    break
-        except Exception:
-            time.sleep(0.1)
-    else:
-        console.print("[yellow]Warning: Feedback server health check failed[/yellow]")
-
-    return thread, actual_port
+        while True:
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await server.stop()
+        console.print("\n[dim]Server stopped.[/dim]")
 
 
 @app.command(name="discover")
@@ -1383,36 +1330,21 @@ def discover_cmd(
             console.print(f"[dim]Expected path: {agent.output_dir}[/dim]")
             raise typer.Exit(code=1)
 
-        # Start feedback server with static file serving
-        _, actual_port = _start_feedback_server(
-            storage,
-            agent,
-            server_port,
-            static_dir=agent.output_dir,
-            user_input=context,
-            session_id=result.session_id,
-        )
-
-        # Open browser to the specific file (use actual port which may differ if preferred was taken)
-        import webbrowser
-        filename = result.html_path.name
-        url = f"http://localhost:{actual_port}/{filename}"
-        webbrowser.open(url)
-
-        console.print(success(f"Opened in browser: {url}"))
-        console.print(f"[dim]HTML file: {result.html_path}[/dim]")
-        if actual_port != server_port:
-            console.print(f"[yellow]Port {server_port} was in use, using port {actual_port}[/yellow]")
-        console.print(f"[dim]Feedback server running on localhost:{actual_port}[/dim]")
-        console.print("[dim]Press Ctrl+C to stop the server when done.[/dim]")
-
-        # Keep main thread alive for feedback server
+        # Run feedback server in main thread's event loop
+        # This ensures subprocess spawning (from /more/stream) happens in the main thread,
+        # avoiding race conditions with SIGCHLD signal handling on macOS
         try:
-            while True:
-                import time
-                time.sleep(1)
+            asyncio.run(_run_server_in_main(
+                storage=storage,
+                agent=agent,
+                port=server_port,
+                static_dir=agent.output_dir,
+                user_input=context,
+                session_id=result.session_id,
+                html_path=result.html_path,
+            ))
         except KeyboardInterrupt:
-            console.print("\n[dim]Server stopped.[/dim]")
+            pass  # Server stopped message already printed in _run_server_in_main
 
     elif dest == "stdout":
         # Stdout destination - print formatted content directly
@@ -1626,6 +1558,14 @@ def settings_callback(
         console.print(f"  [green]{media.name}[/green]: {media.display_name} ({status}){pref}")
 
     console.print(f"\n[dim]Agent chooses distribution based on your taste.md[/dim]")
+
+    # Show pairings
+    if config.pairings:
+        pairings_status = "[green]enabled[/green]" if config.pairings_enabled else "[dim]disabled[/dim]"
+        console.print(f"\n[bold]Pairings[/bold] (bonus content): {pairings_status}")
+        for pairing in config.pairings.values():
+            status = "[green]enabled[/green]" if pairing.enabled else "[dim]disabled[/dim]"
+            console.print(f"  [magenta]{pairing.name}[/magenta]: {pairing.display_name} ({status})")
 
     # Show context sources
     if config.context_sources:

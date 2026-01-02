@@ -46,11 +46,11 @@ def file_loader(storage: "StorageManager", options: dict) -> tuple[str, list[str
 
 
 def history_loader(storage: "StorageManager", options: dict) -> tuple[str, list[str]]:
-    """Build history context with recent items and unextracted feedback.
+    """Build history context with recent items and unextracted ratings.
 
     Options:
         max_recent: Maximum recent items to include (default: 20)
-        include_unextracted: Include unextracted likes/dislikes (default: True)
+        include_unextracted: Include unextracted rated items (default: True)
         warn_threshold: Word count warning threshold (default: 10000)
 
     Returns:
@@ -73,28 +73,41 @@ def history_loader(storage: "StorageManager", options: dict) -> tuple[str, list[
     if recent:
         recent_lines = []
         for e in recent:
-            feedback_str = f", {e.feedback}" if e.feedback else ", no feedback"
-            recent_lines.append(f"- {e.url} ({e.type}{feedback_str})")
+            rating_str = f", rating={e.rating}" if e.rating else ", unrated"
+            recent_lines.append(f"- {e.url} ({e.type}{rating_str})")
         parts.append(
             "Recently shown (do not repeat these URLs):\n" + "\n".join(recent_lines)
         )
 
-    # Unextracted liked/disliked entries
+    # Unextracted entries with intensity-aware groupings
     if include_unextracted:
-        unextracted_liked = storage.get_unextracted_entries("liked")
-        if unextracted_liked:
-            liked_lines = [
-                f'- {e.url} - "{e.reason[:100]}..."' for e in unextracted_liked
-            ]
+        # Loved items (5/5) - strong positive signal
+        loved = storage.get_unextracted_entries(min_rating=5, max_rating=5)
+        if loved:
+            loved_lines = [f'- {e.url} - "{e.reason[:100]}..."' for e in loved]
             parts.append(
-                "Items you've liked (not yet in learnings):\n" + "\n".join(liked_lines)
+                "Items you LOVED (5/5 - strong positive signal):\n"
+                + "\n".join(loved_lines)
             )
 
-        unextracted_disliked = storage.get_unextracted_entries("disliked")
-        if unextracted_disliked:
-            disliked_lines = [f"- {e.url}" for e in unextracted_disliked]
+        # Liked items (4/5)
+        liked = storage.get_unextracted_entries(min_rating=4, max_rating=4)
+        if liked:
+            liked_lines = [f"- {e.url}" for e in liked]
+            parts.append("Items you liked (4/5):\n" + "\n".join(liked_lines))
+
+        # Neutral items (3/5) - not much signal
+        neutral = storage.get_unextracted_entries(min_rating=3, max_rating=3)
+        if neutral:
+            neutral_lines = [f"- {e.url}" for e in neutral]
+            parts.append("Items you were neutral about (3/5):\n" + "\n".join(neutral_lines))
+
+        # Disliked items (1-2/5) - avoid similar
+        disliked = storage.get_unextracted_entries(max_rating=2)
+        if disliked:
+            disliked_lines = [f"- {e.url}" for e in disliked]
             parts.append(
-                "Items you didn't like (not yet in learnings):\n"
+                "Items you didn't like (1-2/5 - avoid similar):\n"
                 + "\n".join(disliked_lines)
             )
 

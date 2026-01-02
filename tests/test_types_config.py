@@ -200,8 +200,14 @@ class TestTypesConfig:
         """Test filtering enabled media types."""
         config = TypesConfig.default()
         enabled = config.get_enabled_media()
-        assert len(enabled) == 4  # article, youtube, book, podcast
+        # Check that we have at least the core media types (article, youtube, book, podcast)
+        assert len(enabled) >= 4
         assert all(m.enabled for m in enabled)
+        media_names = [m.name for m in enabled]
+        assert "article" in media_names
+        assert "youtube" in media_names
+        assert "book" in media_names
+        assert "podcast" in media_names
 
     def test_from_yaml(self):
         """Test loading from YAML file."""
