@@ -93,6 +93,33 @@ function App() {
     loadInitialData()
   }, [])
 
+  // Load user theme overrides
+  useEffect(() => {
+    const loadTheme = async () => {
+      try {
+        const response = await fetch('/api/theme.css')
+        if (response.ok) {
+          const css = await response.text()
+          if (css.trim()) {
+            // Inject user theme overrides
+            const styleId = 'user-theme-overrides'
+            let styleEl = document.getElementById(styleId) as HTMLStyleElement
+            if (!styleEl) {
+              styleEl = document.createElement('style')
+              styleEl.id = styleId
+              document.head.appendChild(styleEl)
+            }
+            styleEl.textContent = css
+          }
+        }
+      } catch (error) {
+        // Theme loading is optional - fail silently
+        console.debug('No user theme overrides:', error)
+      }
+    }
+    loadTheme()
+  }, [])
+
   // Handle rating
   const handleRating = async (url: string, rating: number) => {
     try {

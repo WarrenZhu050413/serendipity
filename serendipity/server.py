@@ -138,6 +138,10 @@ class FeedbackServer:
         self._app.router.add_get("/api/session/init", self._handle_session_init)
         self._app.router.add_options("/api/session/init", self._handle_cors)
 
+        # Theme CSS endpoint
+        self._app.router.add_get("/api/theme.css", self._handle_get_theme)
+        self._app.router.add_options("/api/theme.css", self._handle_cors)
+
         # Serve static files from static_dir if provided, otherwise use legacy html_content
         if self.static_dir:
             # Handle Vite/React asset paths
@@ -321,6 +325,20 @@ class FeedbackServer:
         self._update_activity()
         return web.json_response(
             self.initial_data,
+            headers=self._cors_headers(),
+        )
+
+    async def _handle_get_theme(self, request: web.Request) -> web.Response:
+        """Return user's theme.css overrides.
+
+        Returns CSS content from ~/.serendipity/profiles/<profile>/theme.css
+        or empty CSS if no customization exists.
+        """
+        self._update_activity()
+        theme_css = self.storage.load_theme()
+        return web.Response(
+            text=theme_css,
+            content_type="text/css",
             headers=self._cors_headers(),
         )
 

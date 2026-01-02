@@ -509,6 +509,10 @@ class StorageManager:
         return self.base_dir / "style.css"
 
     @property
+    def theme_path(self) -> Path:
+        return self.base_dir / "theme.css"
+
+    @property
     def output_dir(self) -> Path:
         return self.base_dir / "output"
 
@@ -591,6 +595,25 @@ class StorageManager:
         if not self.style_path.exists():
             return False
         return self.style_path.read_text() != default_content
+
+    def load_theme(self) -> str:
+        """Load user theme CSS overrides.
+
+        Returns:
+            CSS content from theme.css, or empty string if not customized.
+        """
+        if not self.theme_path.exists():
+            return ""
+        return self.theme_path.read_text()
+
+    def save_theme(self, content: str) -> None:
+        """Save user theme CSS overrides.
+
+        Args:
+            content: CSS content for theme.css
+        """
+        self.ensure_dirs()
+        self.theme_path.write_text(content)
 
     def ensure_dirs(self) -> None:
         """Ensure storage directories exist."""

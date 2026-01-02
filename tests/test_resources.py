@@ -28,15 +28,17 @@ class TestGetTemplate:
         # Should contain HTML structure
         assert "<!DOCTYPE html>" in template or "<html" in template
 
-    def test_get_base_template_has_placeholders(self):
-        """Test that base template has expected placeholders."""
+    def test_get_base_template_has_structure(self):
+        """Test that base template has expected structure.
+
+        Note: The legacy base.html is kept for reference but the React frontend
+        loads data via API (no placeholders needed). This test verifies the
+        template still loads correctly.
+        """
         template = get_template("base.html")
-        # Should have CSS placeholder
-        assert "{css}" in template
-        # Should have initial batch placeholder (title + pairings + cards)
-        assert "{initial_batch_html}" in template
-        # Should have session ID placeholder
-        assert "{session_id}" in template
+        # Should have HTML structure
+        assert "<body" in template
+        assert "</html>" in template
 
     def test_get_base_template_convenience(self):
         """Test get_base_template convenience function."""
@@ -140,9 +142,9 @@ class TestResourcesIntegration:
         # Prompt should have user context and type guidance placeholders
         assert "{user_context}" in prompt
         assert "{type_guidance}" in prompt
-        # Template should have the placeholders the system expects
-        assert "{css}" in template
-        assert "{initial_batch_html}" in template
+        # Template should be valid HTML (React frontend doesn't use placeholders)
+        assert "<body" in template
+        assert "</html>" in template
 
     def test_settings_yaml_parseable(self):
         """Test that default settings.yaml can be parsed."""
