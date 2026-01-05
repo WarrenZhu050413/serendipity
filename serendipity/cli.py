@@ -857,26 +857,31 @@ def _get_context(
     return None
 
 
-def _display_terminal(result) -> None:
-    """Display results in terminal."""
-    # Convergent table
-    if result.convergent:
-        table = Table(title="More Like This (Convergent)", show_lines=True)
-        table.add_column("URL", style="cyan", no_wrap=False)
-        table.add_column("Why", style="white")
-        for r in result.convergent:
-            table.add_row(r.url, r.reason)
-        console.print(table)
-        console.print()
+def _display_terminal(result, types_config=None) -> None:
+    """Display results in terminal.
 
-    # Divergent table
-    if result.divergent:
-        table = Table(title="Expand Your Palette (Divergent)", show_lines=True)
-        table.add_column("URL", style="yellow", no_wrap=False)
-        table.add_column("Why", style="white")
-        for r in result.divergent:
-            table.add_row(r.url, r.reason)
-        console.print(table)
+    Args:
+        result: DiscoveryResult with recommendations
+        types_config: Optional TypesConfig for approach display names
+    """
+    # Display all approach sections dynamically
+    styles = ["cyan", "yellow", "green", "magenta", "blue", "red"]
+    for idx, (approach_name, recs) in enumerate(result.recommendations.items()):
+        if recs:
+            # Get display name from config or use title case
+            if types_config and approach_name in types_config.approaches:
+                display_name = types_config.approaches[approach_name].display_name
+            else:
+                display_name = approach_name.title()
+
+            style = styles[idx % len(styles)]
+            table = Table(title=f"{display_name} ({approach_name})", show_lines=True)
+            table.add_column("URL", style=style, no_wrap=False)
+            table.add_column("Why", style="white")
+            for r in recs:
+                table.add_row(r.url, r.reason)
+            console.print(table)
+            console.print()
 
 
 def _save_to_history(
@@ -887,23 +892,16 @@ def _save_to_history(
     entries = []
     timestamp = datetime.now().isoformat()
 
-    for rec in result.convergent:
-        entries.append(HistoryEntry(
-            url=rec.url,
-            reason=rec.reason,
-            type="convergent",
-            timestamp=timestamp,
-            session_id=result.session_id,
-        ))
-
-    for rec in result.divergent:
-        entries.append(HistoryEntry(
-            url=rec.url,
-            reason=rec.reason,
-            type="divergent",
-            timestamp=timestamp,
-            session_id=result.session_id,
-        ))
+    # Save all recommendations from all approaches
+    for approach_name, recs in result.recommendations.items():
+        for rec in recs:
+            entries.append(HistoryEntry(
+                url=rec.url,
+                reason=rec.reason,
+                type=approach_name,
+                timestamp=timestamp,
+                session_id=result.session_id,
+            ))
 
     storage.append_history(entries)
 
@@ -953,26 +951,18 @@ async def _run_server_in_main(
     if save_to_history:
         _save_to_history(storage, result)
 
-    # Combine convergent and divergent for frontend
+    # Combine all approaches for frontend
     all_recommendations = []
-    for rec in result.convergent:
-        all_recommendations.append({
-            "url": rec.url,
-            "reason": rec.reason,
-            "approach": "convergent",
-            "title": rec.title,
-            "media_type": rec.media_type,
-            "is_pairing": False,
-        })
-    for rec in result.divergent:
-        all_recommendations.append({
-            "url": rec.url,
-            "reason": rec.reason,
-            "approach": "divergent",
-            "title": rec.title,
-            "media_type": rec.media_type,
-            "is_pairing": False,
-        })
+    for approach_name, recs in result.recommendations.items():
+        for rec in recs:
+            all_recommendations.append({
+                "url": rec.url,
+                "reason": rec.reason,
+                "approach": approach_name,
+                "title": rec.title,
+                "media_type": rec.media_type,
+                "is_pairing": False,
+            })
 
     # Prepare initial data for frontend
     initial_data = {

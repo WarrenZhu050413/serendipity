@@ -431,8 +431,8 @@ class TestParseResponse:
         </recommendations>
         """
         result = agent._parse_response(text)
-        assert len(result["convergent"]) == 1
-        assert result["convergent"][0].url == "https://example.com"
+        assert len(result["recommendations"]["convergent"]) == 1
+        assert result["recommendations"]["convergent"][0].url == "https://example.com"
         # Note: CSS is no longer parsed from response (now loaded from file)
 
     def test_parse_legacy_output_tag(self, agent):
@@ -443,8 +443,8 @@ class TestParseResponse:
         </output>
         """
         result = agent._parse_response(text)
-        assert len(result["convergent"]) == 1
-        assert result["convergent"][0].url == "https://legacy.com"
+        assert len(result["recommendations"]["convergent"]) == 1
+        assert result["recommendations"]["convergent"][0].url == "https://legacy.com"
 
     def test_parse_with_metadata(self, agent):
         """Test parsing recommendations with metadata."""
@@ -463,8 +463,8 @@ class TestParseResponse:
         </recommendations>
         """
         result = agent._parse_response(text)
-        assert len(result["convergent"]) == 1
-        rec = result["convergent"][0]
+        assert len(result["recommendations"]["convergent"]) == 1
+        rec = result["recommendations"]["convergent"][0]
         assert rec.url == "https://youtube.com/watch?v=123"
         assert rec.media_type == "youtube"
         assert rec.title == "Video Title"
@@ -487,10 +487,10 @@ class TestParseResponse:
         </recommendations>
         """
         result = agent._parse_response(text)
-        assert len(result["convergent"]) == 1
-        assert result["convergent"][0].url == "https://example.com"
-        assert len(result["divergent"]) == 1
-        assert result["divergent"][0].url == "https://surprise.com"
+        assert len(result["recommendations"]["convergent"]) == 1
+        assert result["recommendations"]["convergent"][0].url == "https://example.com"
+        assert len(result["recommendations"]["divergent"]) == 1
+        assert result["recommendations"]["divergent"][0].url == "https://surprise.com"
 
 
 class TestRenderRecommendations:
@@ -728,12 +728,17 @@ class TestDiscoveryResult:
         from serendipity.models import Recommendation
 
         result = DiscoveryResult(
-            convergent=[Recommendation(url="https://a.com", reason="test")],
-            divergent=[],
+            recommendations={
+                "convergent": [Recommendation(url="https://a.com", reason="test")],
+                "divergent": [],
+            },
             session_id="abc123",
             cost_usd=0.05,
         )
 
+        # Test new recommendations dict access
+        assert len(result.recommendations["convergent"]) == 1
+        # Test backwards compatibility properties
         assert len(result.convergent) == 1
         assert result.session_id == "abc123"
         assert result.cost_usd == 0.05
@@ -746,14 +751,29 @@ class TestDiscoveryResult:
         from serendipity.models import HtmlStyle
 
         result = DiscoveryResult(
-            convergent=[],
-            divergent=[],
+            recommendations={},
             session_id="test",
             html_style=HtmlStyle(description="Dark theme", css="body { background: #000; }"),
         )
 
         assert result.html_style is not None
         assert result.html_style.description == "Dark theme"
+
+    def test_all_recommendations_method(self):
+        """Test all_recommendations() returns all recs from all approaches."""
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import Recommendation
+
+        result = DiscoveryResult(
+            recommendations={
+                "convergent": [Recommendation(url="https://a.com", reason="test")],
+                "divergent": [Recommendation(url="https://b.com", reason="test2")],
+                "custom": [Recommendation(url="https://c.com", reason="test3")],
+            },
+        )
+
+        all_recs = result.all_recommendations()
+        assert len(all_recs) == 3
 
 
 class TestAgentStreamingMessages:
@@ -944,8 +964,8 @@ class TestAgentParseResponse:
 
         result = agent._parse_response(text)
 
-        assert len(result.get("convergent", [])) == 1
-        assert result["convergent"][0].url == "https://test.com"
+        assert len(result["recommendations"].get("convergent", [])) == 1
+        assert result["recommendations"]["convergent"][0].url == "https://test.com"
 
     def test_parse_recommendations_with_code_blocks(self):
         """Test parsing recommendations from code blocks."""
@@ -961,7 +981,7 @@ class TestAgentParseResponse:
 
         result = agent._parse_response(text)
 
-        assert len(result.get("convergent", [])) == 1
+        assert len(result["recommendations"].get("convergent", [])) == 1
 
     def test_parse_recommendations_with_invalid_json(self):
         """Test parsing handles invalid JSON gracefully."""
@@ -974,8 +994,8 @@ class TestAgentParseResponse:
         result = agent._parse_response(text)
 
         # Should return empty result
-        assert result.get("convergent", []) == []
-        assert result.get("divergent", []) == []
+        assert result["recommendations"].get("convergent", []) == []
+        assert result["recommendations"].get("divergent", []) == []
 
     def test_parse_response_no_css_key(self):
         """Test that _parse_response does NOT return CSS (now loaded from file)."""
@@ -992,9 +1012,10 @@ class TestAgentParseResponse:
 
         # CSS key should NOT be in result
         assert "css" not in result
-        # Only convergent and divergent keys
-        assert "convergent" in result
-        assert "divergent" in result
+        # recommendations dict should have approach keys
+        assert "recommendations" in result
+        assert "convergent" in result["recommendations"]
+        assert "divergent" in result["recommendations"]
 
 
 # ============================================================
@@ -1015,23 +1036,25 @@ class TestRenderMarkdown:
         """Test rendering empty result to markdown."""
         from serendipity.agent import DiscoveryResult
 
-        result = DiscoveryResult(convergent=[], divergent=[])
+        result = DiscoveryResult(recommendations={})
         markdown = agent.render_markdown(result)
 
         assert "# Serendipity Discoveries" in markdown
 
     def test_render_markdown_with_convergent(self, agent):
         """Test rendering convergent recommendations."""
-        from serendipity.agent import DiscoveryResult, Recommendation
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import Recommendation
 
         result = DiscoveryResult(
-            convergent=[Recommendation(
-                url="https://example.com",
-                reason="Great article",
-                title="Test Title",
-                media_type="article"
-            )],
-            divergent=[]
+            recommendations={
+                "convergent": [Recommendation(
+                    url="https://example.com",
+                    reason="Great article",
+                    title="Test Title",
+                    media_type="article"
+                )],
+            }
         )
         markdown = agent.render_markdown(result)
 
@@ -1040,11 +1063,14 @@ class TestRenderMarkdown:
 
     def test_render_markdown_with_both_types(self, agent):
         """Test rendering both convergent and divergent recommendations."""
-        from serendipity.agent import DiscoveryResult, Recommendation
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import Recommendation
 
         result = DiscoveryResult(
-            convergent=[Recommendation(url="https://conv.com", reason="Conv reason")],
-            divergent=[Recommendation(url="https://div.com", reason="Div reason")]
+            recommendations={
+                "convergent": [Recommendation(url="https://conv.com", reason="Conv reason")],
+                "divergent": [Recommendation(url="https://div.com", reason="Div reason")],
+            }
         )
         markdown = agent.render_markdown(result)
 
@@ -1071,26 +1097,29 @@ class TestRenderJSON:
         from serendipity.agent import DiscoveryResult
         import json
 
-        result = DiscoveryResult(convergent=[], divergent=[])
+        result = DiscoveryResult(recommendations={})
         json_str = agent.render_json(result)
         data = json.loads(json_str)
 
-        assert data["convergent"] == []
-        assert data["divergent"] == []
+        # Only pairings key should be present for empty recommendations
+        assert data["pairings"] == []
 
     def test_render_json_with_recommendations(self, agent):
         """Test rendering recommendations to JSON."""
-        from serendipity.agent import DiscoveryResult, Recommendation
+        from serendipity.agent import DiscoveryResult
+        from serendipity.models import Recommendation
         import json
 
         result = DiscoveryResult(
-            convergent=[Recommendation(
-                url="https://example.com",
-                reason="Test reason",
-                title="Test",
-                media_type="article"
-            )],
-            divergent=[]
+            recommendations={
+                "convergent": [Recommendation(
+                    url="https://example.com",
+                    reason="Test reason",
+                    title="Test",
+                    media_type="article"
+                )],
+                "divergent": [],
+            }
         )
         json_str = agent.render_json(result)
         data = json.loads(json_str)

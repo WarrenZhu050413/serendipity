@@ -54,7 +54,7 @@ class CommandDestination(OutputDestination):
         # Build placeholder context
         context = {
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "count": len(result.convergent) + len(result.divergent),
+            "count": len(result.all_recommendations()),
             **self.options,  # Include options like to, subject
         }
 

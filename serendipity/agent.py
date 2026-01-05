@@ -62,16 +62,37 @@ OUTPUT_DIR = Path.home() / ".serendipity" / "output"
 
 @dataclass
 class DiscoveryResult:
-    """Result from a discovery operation."""
+    """Result from a discovery operation.
 
-    convergent: list[Recommendation]
-    divergent: list[Recommendation]
+    Recommendations are keyed by approach name (e.g., 'convergent', 'divergent').
+    This allows for dynamic approach types defined in settings.yaml.
+    """
+
+    recommendations: dict[str, list[Recommendation]] = field(default_factory=dict)
     pairings: list[Pairing] = field(default_factory=list)
     session_id: str = ""
     cost_usd: Optional[float] = None
     raw_response: Optional[str] = None
     html_style: Optional[HtmlStyle] = None
     html_path: Optional[Path] = None
+
+    # Backwards compatibility properties
+    @property
+    def convergent(self) -> list[Recommendation]:
+        """Get convergent recommendations (backwards compatibility)."""
+        return self.recommendations.get("convergent", [])
+
+    @property
+    def divergent(self) -> list[Recommendation]:
+        """Get divergent recommendations (backwards compatibility)."""
+        return self.recommendations.get("divergent", [])
+
+    def all_recommendations(self) -> list[Recommendation]:
+        """Get all recommendations across all approaches."""
+        all_recs = []
+        for recs in self.recommendations.values():
+            all_recs.extend(recs)
+        return all_recs
 
 
 class SerendipityAgent:
@@ -327,8 +348,7 @@ class SerendipityAgent:
         )
 
         return DiscoveryResult(
-            convergent=parsed.get("convergent", []),
-            divergent=parsed.get("divergent", []),
+            recommendations=parsed.get("recommendations", {}),
             pairings=parsed.get("pairings", []),
             session_id=session_id,
             cost_usd=cost_usd,
@@ -854,38 +874,46 @@ Output as JSON:
     def _parse_response(self, text: str) -> dict:
         """Extract recommendations and pairings from response text.
 
-        Parses <recommendations> JSON section.
+        Parses <recommendations> JSON section with dynamic approach support.
 
         Returns dict with:
-            - convergent: list[Recommendation]
-            - divergent: list[Recommendation]
+            - recommendations: dict[str, list[Recommendation]] keyed by approach
             - pairings: list[Pairing]
         """
-        result = {"convergent": [], "divergent": [], "pairings": []}
+        result = {"recommendations": {}, "pairings": []}
 
-        def parse_all(data: dict) -> tuple[list[Recommendation], list[Recommendation], list[Pairing]]:
+        # Get enabled approach names from config
+        enabled_approaches = {a.name for a in self.types_config.get_enabled_approaches()}
+        # Always include convergent/divergent as fallback
+        enabled_approaches.update({"convergent", "divergent"})
+
+        def parse_all(data: dict) -> tuple[dict[str, list[Recommendation]], list[Pairing]]:
             """Parse raw dicts into Recommendation and Pairing objects."""
-            convergent = [
-                Recommendation.from_dict(r, approach="convergent")
-                for r in data.get("convergent", [])
-            ]
-            divergent = [
-                Recommendation.from_dict(r, approach="divergent")
-                for r in data.get("divergent", [])
-            ]
-            # Fallback: handle "recommendations" key (split evenly as convergent)
-            if not convergent and not divergent and "recommendations" in data:
+            recommendations: dict[str, list[Recommendation]] = {}
+
+            # Parse each approach dynamically
+            for approach_name in enabled_approaches:
+                if approach_name in data:
+                    recommendations[approach_name] = [
+                        Recommendation.from_dict(r, approach=approach_name)
+                        for r in data.get(approach_name, [])
+                    ]
+
+            # Fallback: handle "recommendations" key (treat as first enabled approach)
+            if not recommendations and "recommendations" in data:
                 all_recs = data.get("recommendations", [])
-                # Treat all as convergent if no explicit approach
-                convergent = [
-                    Recommendation.from_dict(r, approach="convergent")
+                # Use first enabled approach or default to "convergent"
+                default_approach = next(iter(enabled_approaches), "convergent")
+                recommendations[default_approach] = [
+                    Recommendation.from_dict(r, approach=default_approach)
                     for r in all_recs
                 ]
+
             pairings = [
                 Pairing.from_dict(p)
                 for p in data.get("pairings", [])
             ]
-            return convergent, divergent, pairings
+            return recommendations, pairings
 
         # Extract recommendations JSON from <recommendations> tags
         rec_match = re.search(r"<recommendations>\s*(.*?)\s*</recommendations>", text, re.DOTALL)
@@ -897,32 +925,32 @@ Output as JSON:
                 rec_content = code_match.group(1)
             try:
                 data = json.loads(rec_content)
-                result["convergent"], result["divergent"], result["pairings"] = parse_all(data)
+                result["recommendations"], result["pairings"] = parse_all(data)
             except json.JSONDecodeError:
                 pass  # Will fall through to legacy formats
 
         # Fallback: try legacy formats if no recommendations found
-        if not result["convergent"] and not result["divergent"]:
+        if not result["recommendations"]:
             # Try <output> tags
             output_match = re.search(r"<output>\s*(.*?)\s*</output>", text, re.DOTALL)
             if output_match:
                 try:
                     data = json.loads(output_match.group(1))
-                    result["convergent"], result["divergent"], result["pairings"] = parse_all(data)
+                    result["recommendations"], result["pairings"] = parse_all(data)
                 except json.JSONDecodeError:
                     pass
 
             # Try JSON code block
-            if not result["convergent"] and not result["divergent"]:
+            if not result["recommendations"]:
                 json_match = re.search(r"```json?\s*(.*?)\s*```", text, re.DOTALL)
                 if json_match:
                     try:
                         data = json.loads(json_match.group(1))
-                        result["convergent"], result["divergent"], result["pairings"] = parse_all(data)
+                        result["recommendations"], result["pairings"] = parse_all(data)
                     except json.JSONDecodeError:
                         pass
 
-        if not result["convergent"] and not result["divergent"]:
+        if not result["recommendations"]:
             self.console.print("[yellow]Warning: Could not parse recommendations from response[/yellow]")
 
         return result
@@ -944,10 +972,10 @@ Output as JSON:
             """Escape HTML special characters."""
             return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
-        # Map approach to display label
+        # Build approach labels from config dynamically
         approach_labels = {
-            "convergent": "Convergent",
-            "divergent": "Divergent",
+            name: approach.display_name
+            for name, approach in self.types_config.approaches.items()
         }
 
         # Star SVG for 5-star rating system
@@ -1161,21 +1189,17 @@ Output as JSON:
         parts.append("# Serendipity Discoveries")
         parts.append("")
 
-        # Convergent recommendations
-        if result.convergent:
-            parts.append("## More Like This")
-            parts.append("")
-            for rec in result.convergent:
-                parts.append(self._format_recommendation_md(rec))
-            parts.append("")
-
-        # Divergent recommendations
-        if result.divergent:
-            parts.append("## Surprises")
-            parts.append("")
-            for rec in result.divergent:
-                parts.append(self._format_recommendation_md(rec))
-            parts.append("")
+        # Render all approach sections dynamically
+        for approach_name, recs in result.recommendations.items():
+            if recs:
+                # Get display name from config, fallback to title case
+                approach_config = self.types_config.approaches.get(approach_name)
+                display_name = approach_config.display_name if approach_config else approach_name.title()
+                parts.append(f"## {display_name}")
+                parts.append("")
+                for rec in recs:
+                    parts.append(self._format_recommendation_md(rec))
+                parts.append("")
 
         # Pairings section
         if result.pairings:
@@ -1246,40 +1270,36 @@ Output as JSON:
             result: DiscoveryResult with recommendations
 
         Returns:
-            JSON string with recommendations
+            JSON string with recommendations keyed by approach
         """
-        output = {
-            "convergent": [
+        output: dict = {}
+
+        # Add recommendations keyed by approach
+        for approach_name, recs in result.recommendations.items():
+            output[approach_name] = [
                 {
                     "url": r.url,
                     "title": r.title,
                     "reason": r.reason,
                     "media_type": r.media_type,
+                    "approach": r.approach,
                     "metadata": r.metadata,
                 }
-                for r in result.convergent
-            ],
-            "divergent": [
-                {
-                    "url": r.url,
-                    "title": r.title,
-                    "reason": r.reason,
-                    "media_type": r.media_type,
-                    "metadata": r.metadata,
-                }
-                for r in result.divergent
-            ],
-            "pairings": [
-                {
-                    "type": p.type,
-                    "content": p.content,
-                    "url": p.url,
-                    "title": p.title,
-                    "metadata": p.metadata,
-                }
-                for p in result.pairings
-            ],
-        }
+                for r in recs
+            ]
+
+        # Add pairings
+        output["pairings"] = [
+            {
+                "type": p.type,
+                "content": p.content,
+                "url": p.url,
+                "title": p.title,
+                "metadata": p.metadata,
+            }
+            for p in result.pairings
+        ]
+
         return json.dumps(output, indent=2)
 
     def _parse_json(self, text: str) -> dict:
