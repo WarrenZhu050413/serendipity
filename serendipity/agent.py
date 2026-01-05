@@ -337,6 +337,106 @@ class SerendipityAgent:
             html_path=output_path,
         )
 
+    async def discover_stream(
+        self,
+        context: str,
+        context_augmentation: str = "",
+    ):
+        """Run discovery with SSE streaming status updates.
+
+        Yields StatusEvent objects for real-time progress in the browser.
+
+        Args:
+            context: User's context (text, links, instructions)
+            context_augmentation: Additional context (preferences, history)
+
+        Yields:
+            StatusEvent objects for SSE streaming
+        """
+        yield StatusEvent(event="status", data={"message": "Starting discovery..."})
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_path = self.output_dir / f"discovery_{timestamp}.html"
+
+        full_context_parts = []
+        if context_augmentation:
+            full_context_parts.append(context_augmentation)
+            yield StatusEvent(event="status", data={"message": "With profile context"})
+        full_context_parts.append(f"<current_context>\n{context}\n</current_context>")
+        full_context = "\n\n".join(full_context_parts)
+
+        type_guidance = self.prompt_builder.build_type_guidance()
+        output_format = self.prompt_builder.build_output_schema()
+        prompt = self.prompt_template.format(
+            user_context=full_context,
+            type_guidance=type_guidance,
+            output_format=output_format,
+            template_content=self.base_template,
+        )
+
+        allowed_tools = self._get_allowed_tools()
+        mcp_servers = self._get_mcp_servers()
+        system_prompt_hints = self._get_system_prompt_hints()
+        base_system_prompt = self.system_prompt
+        if system_prompt_hints:
+            base_system_prompt += " " + system_prompt_hints
+
+        options = ClaudeAgentOptions(
+            model=self.model,
+            system_prompt=base_system_prompt,
+            max_turns=50,
+            allowed_tools=allowed_tools,
+            mcp_servers=mcp_servers if mcp_servers else None,
+            max_thinking_tokens=self.max_thinking_tokens,
+        )
+
+        response_text = []
+        session_id = ""
+        cost_usd = None
+
+        try:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+                async for msg in client.receive_response():
+                    if isinstance(msg, SystemMessage) and msg.subtype == "init":
+                        logger.info("SDK initialized (streaming)", plugins=[p.get("name") for p in msg.data.get("plugins", [])])
+                    elif isinstance(msg, AssistantMessage):
+                        for block in msg.content:
+                            if isinstance(block, ToolUseBlock):
+                                tool_name = block.name
+                                tool_input = block.input or {}
+                                if tool_name == "WebSearch":
+                                    yield StatusEvent(event="tool_use", data={"tool": tool_name, "query": tool_input.get("query", ""), "message": f'WebSearch "{tool_input.get("query", "")}"'})
+                                elif tool_name == "WebFetch":
+                                    url = tool_input.get("url", "")
+                                    yield StatusEvent(event="tool_use", data={"tool": tool_name, "url": url, "message": f'WebFetch "{url[:60]}..."'})
+                                else:
+                                    yield StatusEvent(event="tool_use", data={"tool": tool_name, "message": tool_name})
+                            elif isinstance(block, TextBlock):
+                                response_text.append(block.text)
+                    elif isinstance(msg, ResultMessage):
+                        session_id = msg.session_id
+                        cost_usd = msg.total_cost_usd
+
+            self.last_session_id = session_id
+            self.cost_usd = cost_usd
+            full_response = "".join(response_text)
+            parsed = self._parse_response(full_response)
+            all_recs = parsed.get("convergent", []) + parsed.get("divergent", [])
+            pairings = parsed.get("pairings", [])
+
+            html_content = self.base_template.replace("{css}", self.style_css)
+            html_content = html_content.replace("{icons_json}", get_icons_json())
+            html_content = html_content.replace("{initial_data_json}", json.dumps({"recommendations": [r.to_dict() for r in all_recs], "pairings": [p.to_dict() for p in pairings]}, indent=2))
+            html_content = html_content.replace("{session_id}", session_id)
+            html_content = html_content.replace("{server_port}", str(self.server_port))
+            output_path.write_text(html_content)
+
+            yield StatusEvent(event="complete", data={"success": True, "session_id": session_id, "recommendations": [r.to_dict() for r in all_recs], "pairings": [p.to_dict() for p in pairings], "icons": get_icons_json()})
+        except Exception as e:
+            logger.error("discover_stream error", error=str(e))
+            yield StatusEvent(event="error", data={"error": str(e)})
+
     async def get_more(
         self,
         session_id: str,

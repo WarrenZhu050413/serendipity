@@ -45,6 +45,12 @@ export {
   Wine,
   Gamepad2,
   Utensils,
+  Footprints,
+  Target,
+
+  // Approach types
+  Crosshair,
+  Compass,
 } from 'lucide-react'
 
 import type { LucideIcon } from 'lucide-react'
@@ -69,7 +75,11 @@ import {
   Wine,
   Gamepad2,
   Utensils,
+  Footprints,
+  Target,
   Star,
+  Crosshair,
+  Compass,
 } from 'lucide-react'
 
 // Media type to icon mapping
@@ -78,6 +88,7 @@ export const mediaTypeIcons: Record<string, LucideIcon> = {
   book: Book,
   podcast: Headphones,
   video: Play,
+  youtube: Play,
   music: Music,
   art: Palette,
   architecture: Building,
@@ -89,16 +100,35 @@ export const mediaTypeIcons: Record<string, LucideIcon> = {
 }
 
 // Pairing type to icon mapping
+// Includes both type keys (music, food) and display name variations (listen, taste)
 export const pairingTypeIcons: Record<string, LucideIcon> = {
+  // Type keys (from settings)
   tip: Lightbulb,
-  info: Info,
-  resource: Link,
   music: Music,
   food: Utensils,
+  exercise: Footprints,
   quote: Quote,
+  action: Target,
+
+  // Display name aliases (agent sometimes outputs these instead of keys)
+  listen: Music,
+  taste: Utensils,
+  move: Footprints,
+  try: Lightbulb,
+  do: Target,
+
+  // Legacy/other types
+  info: Info,
+  resource: Link,
   discussion: MessageCircle,
   activity: Activity,
   wine: Wine,
   game: Gamepad2,
   default: Star,
+}
+
+// Approach type to icon mapping
+export const approachIcons: Record<string, LucideIcon> = {
+  convergent: Crosshair,
+  divergent: Compass,
 }

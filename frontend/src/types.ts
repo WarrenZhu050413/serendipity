@@ -155,6 +155,26 @@ export interface SessionInitResponse {
 }
 
 // ============================================================
+// Canvas View Types
+// ============================================================
+
+export interface TreeCard {
+  id: string
+  recommendation: Recommendation
+  gen: number
+  parentId: string | null
+  children: string[]
+  isNew?: boolean
+}
+
+export interface Connection {
+  from: string
+  to: string
+}
+
+export type ContextMode = 'just_this' | 'include_parent' | 'full_chain'
+
+// ============================================================
 // Hook Return Types
 // ============================================================
 

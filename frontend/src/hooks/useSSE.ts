@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import type { Recommendation, Pairing, MoreRequest } from '../types'
 
-interface SearchItem {
+export interface SearchItem {
   tool: string
   query?: string
   message?: string
@@ -12,6 +12,48 @@ interface SearchItem {
 interface UseSSEOptions {
   onComplete: (recommendations: Recommendation[], pairings: Pairing[], batchTitle?: string) => void
   onError: (error: string) => void
+}
+
+// Shared SSE parsing helper
+export async function parseSSEStream(
+  response: Response,
+  onEvent: (event: string, data: unknown) => void,
+) {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('No response body')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    let currentEvent = ''
+    let currentData = ''
+
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7)
+      } else if (line.startsWith('data: ')) {
+        currentData = line.slice(6)
+      } else if (line === '' && currentEvent && currentData) {
+        try {
+          const data = JSON.parse(currentData)
+          onEvent(currentEvent, data)
+        } catch (e) {
+          console.error('Failed to parse SSE data:', e)
+        }
+        currentEvent = ''
+        currentData = ''
+      }
+    }
+  }
 }
 
 export function useSSE({ onComplete, onError }: UseSSEOptions) {

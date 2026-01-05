@@ -110,7 +110,8 @@ class ApiClient {
   // ============================================================
 
   async getSettings(): Promise<Settings> {
-    return this.request('/api/settings')
+    const response = await this.request<{ settings: Settings }>('/api/settings')
+    return response.settings
   }
 
   async updateSettings(updates: Partial<Settings>): Promise<{ success: boolean }> {

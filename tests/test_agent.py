@@ -995,3 +995,302 @@ class TestAgentParseResponse:
         # Only convergent and divergent keys
         assert "convergent" in result
         assert "divergent" in result
+
+
+# ============================================================
+# Render Markdown Tests
+# ============================================================
+
+
+class TestRenderMarkdown:
+    """Tests for render_markdown method."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent with mock console."""
+        from serendipity.agent import SerendipityAgent
+        return SerendipityAgent(console=MagicMock())
+
+    def test_render_markdown_empty_result(self, agent):
+        """Test rendering empty result to markdown."""
+        from serendipity.agent import DiscoveryResult
+
+        result = DiscoveryResult(convergent=[], divergent=[])
+        markdown = agent.render_markdown(result)
+
+        assert "# Serendipity Discoveries" in markdown
+
+    def test_render_markdown_with_convergent(self, agent):
+        """Test rendering convergent recommendations."""
+        from serendipity.agent import DiscoveryResult, Recommendation
+
+        result = DiscoveryResult(
+            convergent=[Recommendation(
+                url="https://example.com",
+                reason="Great article",
+                title="Test Title",
+                media_type="article"
+            )],
+            divergent=[]
+        )
+        markdown = agent.render_markdown(result)
+
+        assert "Test Title" in markdown or "example.com" in markdown
+        assert "Great article" in markdown
+
+    def test_render_markdown_with_both_types(self, agent):
+        """Test rendering both convergent and divergent recommendations."""
+        from serendipity.agent import DiscoveryResult, Recommendation
+
+        result = DiscoveryResult(
+            convergent=[Recommendation(url="https://conv.com", reason="Conv reason")],
+            divergent=[Recommendation(url="https://div.com", reason="Div reason")]
+        )
+        markdown = agent.render_markdown(result)
+
+        assert "conv.com" in markdown
+        assert "div.com" in markdown
+
+
+# ============================================================
+# Render JSON Tests
+# ============================================================
+
+
+class TestRenderJSON:
+    """Tests for render_json method."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent with mock console."""
+        from serendipity.agent import SerendipityAgent
+        return SerendipityAgent(console=MagicMock())
+
+    def test_render_json_empty_result(self, agent):
+        """Test rendering empty result to JSON."""
+        from serendipity.agent import DiscoveryResult
+        import json
+
+        result = DiscoveryResult(convergent=[], divergent=[])
+        json_str = agent.render_json(result)
+        data = json.loads(json_str)
+
+        assert data["convergent"] == []
+        assert data["divergent"] == []
+
+    def test_render_json_with_recommendations(self, agent):
+        """Test rendering recommendations to JSON."""
+        from serendipity.agent import DiscoveryResult, Recommendation
+        import json
+
+        result = DiscoveryResult(
+            convergent=[Recommendation(
+                url="https://example.com",
+                reason="Test reason",
+                title="Test",
+                media_type="article"
+            )],
+            divergent=[]
+        )
+        json_str = agent.render_json(result)
+        data = json.loads(json_str)
+
+        assert len(data["convergent"]) == 1
+        assert data["convergent"][0]["url"] == "https://example.com"
+
+
+# ============================================================
+# Parse JSON Tests
+# ============================================================
+
+
+class TestParseJSON:
+    """Tests for _parse_json method."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent with mock console."""
+        from serendipity.agent import SerendipityAgent
+        return SerendipityAgent(console=MagicMock())
+
+    def test_parse_json_valid(self, agent):
+        """Test parsing valid JSON."""
+        result = agent._parse_json('{"key": "value"}')
+        assert result == {"key": "value"}
+
+    def test_parse_json_with_markdown_fence(self, agent):
+        """Test parsing JSON wrapped in markdown fence."""
+        result = agent._parse_json('```json\n{"key": "value"}\n```')
+        assert result == {"key": "value"}
+
+    def test_parse_json_invalid_returns_empty(self, agent):
+        """Test that invalid JSON returns empty dict or handles gracefully."""
+        # The agent may try to extract JSON from text in various ways
+        result = agent._parse_json('completely invalid {json')
+        # Should not raise, returns some dict (possibly empty or with defaults)
+        assert isinstance(result, dict)
+
+    def test_parse_json_with_trailing_content(self, agent):
+        """Test parsing JSON with trailing non-JSON content."""
+        result = agent._parse_json('{"key": "value"}\n\nSome text after')
+        assert result == {"key": "value"}
+
+
+# ============================================================
+# Format Recommendation Tests
+# ============================================================
+
+
+class TestFormatRecommendation:
+    """Tests for _format_recommendation_md method."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent with mock console."""
+        from serendipity.agent import SerendipityAgent
+        return SerendipityAgent(console=MagicMock())
+
+    def test_format_basic_recommendation(self, agent):
+        """Test formatting a basic recommendation."""
+        from serendipity.agent import Recommendation
+
+        rec = Recommendation(url="https://example.com", reason="Good article")
+        md = agent._format_recommendation_md(rec)
+
+        assert "https://example.com" in md
+        assert "Good article" in md
+
+    def test_format_recommendation_with_title(self, agent):
+        """Test formatting recommendation with title."""
+        from serendipity.agent import Recommendation
+
+        rec = Recommendation(
+            url="https://example.com",
+            reason="Good article",
+            title="Test Title"
+        )
+        md = agent._format_recommendation_md(rec)
+
+        assert "Test Title" in md
+
+    def test_format_recommendation_with_media_type(self, agent):
+        """Test formatting recommendation with media type."""
+        from serendipity.agent import Recommendation
+
+        rec = Recommendation(
+            url="https://example.com",
+            reason="Good podcast",
+            media_type="podcast"
+        )
+        md = agent._format_recommendation_md(rec)
+
+        assert "podcast" in md or "Podcast" in md
+
+
+# ============================================================
+# Render Pairings Tests
+# ============================================================
+
+
+class TestRenderPairings:
+    """Tests for _render_pairings method."""
+
+    @pytest.fixture
+    def agent(self):
+        """Create agent with mock console."""
+        from serendipity.agent import SerendipityAgent
+        return SerendipityAgent(console=MagicMock())
+
+    def test_render_empty_pairings(self, agent):
+        """Test rendering empty pairings list."""
+        html = agent._render_pairings([])
+        assert html == ""
+
+    def test_render_single_pairing(self, agent):
+        """Test rendering a single pairing."""
+        from serendipity.agent import Pairing
+
+        pairings = [Pairing(type="tip", title="A Tip", content="Tip content")]
+        html = agent._render_pairings(pairings)
+
+        # The title appears in link if URL present, but content always appears
+        assert "Tip content" in html
+        assert "pairing-card" in html
+
+    def test_render_multiple_pairings(self, agent):
+        """Test rendering multiple pairings."""
+        from serendipity.agent import Pairing
+
+        pairings = [
+            Pairing(type="tip", title="Tip 1", content="Content 1"),
+            Pairing(type="quote", title="Quote", content="A quote"),
+        ]
+        html = agent._render_pairings(pairings)
+
+        assert "Content 1" in html
+        assert "A quote" in html
+        assert html.count("pairing-card") == 2
+
+
+# ============================================================
+# Model Configuration Tests
+# ============================================================
+
+
+class TestModelConfiguration:
+    """Tests for model configuration."""
+
+    def test_default_model(self):
+        """Test default model is opus."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock())
+        assert agent.model == "opus"
+
+    def test_custom_model(self):
+        """Test custom model parameter."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock(), model="claude-3-haiku")
+        assert agent.model == "claude-3-haiku"
+
+    def test_max_thinking_tokens(self):
+        """Test max thinking tokens is set."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock(), max_thinking_tokens=5000)
+        assert agent.max_thinking_tokens == 5000
+
+
+# ============================================================
+# Allowed Tools Tests
+# ============================================================
+
+
+class TestAllowedTools:
+    """Tests for _get_allowed_tools method."""
+
+    def test_base_tools_included(self):
+        """Test that base tools are always included."""
+        from serendipity.agent import SerendipityAgent
+
+        agent = SerendipityAgent(console=MagicMock())
+        tools = agent._get_allowed_tools()
+
+        # Web tools should be included by default (capitalized names)
+        assert "WebSearch" in tools
+        assert "WebFetch" in tools
+
+    def test_tools_from_context_manager(self):
+        """Test that tools from context manager are included."""
+        from serendipity.agent import SerendipityAgent
+        from serendipity.context_sources import ContextSourceManager
+
+        manager = MagicMock(spec=ContextSourceManager)
+        manager.get_allowed_tools.return_value = ["custom_tool"]
+
+        agent = SerendipityAgent(console=MagicMock(), context_manager=manager)
+        tools = agent._get_allowed_tools()
+
+        assert "WebSearch" in tools
+        assert "custom_tool" in tools

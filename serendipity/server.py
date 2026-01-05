@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 import yaml
 from aiohttp import web
+from aiohttp.client_exceptions import ClientConnectionResetError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class FeedbackServer:
         storage: StorageManager,
         on_more_request: Optional[Callable] = None,
         on_more_stream_request: Optional[Callable] = None,
+        on_init_stream_request: Optional[Callable] = None,
         idle_timeout: int = 600,  # 10 minutes
         html_content: Optional[str] = None,
         static_dir: Optional[Path] = None,
@@ -48,6 +50,8 @@ class FeedbackServer:
                 - custom_directives: Optional string with user's custom instructions for this batch
             on_more_stream_request: Callback for streaming "more" requests. Returns an async
                 generator that yields StatusEvent objects for SSE streaming.
+            on_init_stream_request: Callback for streaming initial discovery. Returns an async
+                generator that yields StatusEvent objects for SSE streaming during first load.
             idle_timeout: Seconds of inactivity before auto-shutdown
             html_content: Optional HTML content to serve at / (legacy mode)
             static_dir: Optional directory to serve static files from
@@ -57,6 +61,7 @@ class FeedbackServer:
         self.storage = storage
         self.on_more_request = on_more_request
         self.on_more_stream_request = on_more_stream_request
+        self.on_init_stream_request = on_init_stream_request
         self.idle_timeout = idle_timeout
         self.html_content = html_content
         self.static_dir = static_dir
@@ -136,7 +141,9 @@ class FeedbackServer:
 
         # Session init for React frontend
         self._app.router.add_get("/api/session/init", self._handle_session_init)
+        self._app.router.add_post("/api/session/init/stream", self._handle_session_init_stream)
         self._app.router.add_options("/api/session/init", self._handle_cors)
+        self._app.router.add_options("/api/session/init/stream", self._handle_cors)
 
         # Theme CSS endpoint
         self._app.router.add_get("/api/theme.css", self._handle_get_theme)
@@ -327,6 +334,74 @@ class FeedbackServer:
             self.initial_data,
             headers=self._cors_headers(),
         )
+
+    async def _handle_session_init_stream(self, request: web.Request) -> web.StreamResponse:
+        """Handle initial discovery with SSE streaming for live status updates.
+
+        Returns SSE stream with events:
+        - status: General status messages
+        - tool_use: Tool calls (WebSearch, etc.)
+        - complete: Final result with recommendations, session_id, icons
+        - error: Error occurred
+        """
+        self._update_activity()
+
+        if not self.on_init_stream_request:
+            return web.json_response(
+                {"error": "Streaming init not supported"},
+                status=501,
+                headers=self._cors_headers(),
+            )
+
+        # Set up SSE response
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                **self._cors_headers(),
+            },
+        )
+        await response.prepare(request)
+
+        try:
+            logger.info("Starting /api/session/init/stream handler")
+            # Get the async generator from the callback
+            async for event in self.on_init_stream_request():
+                # Send SSE event
+                sse_data = event.to_sse()
+                await response.write(sse_data.encode("utf-8"))
+                await response.drain()
+
+                # If complete event, update initial_data for future requests
+                if event.event == "complete" and event.data.get("success"):
+                    self.initial_data = {
+                        "session_id": event.data.get("session_id", ""),
+                        "recommendations": event.data.get("recommendations", []),
+                        "pairings": event.data.get("pairings", []),
+                        "icons": event.data.get("icons", {}),
+                    }
+
+            logger.info("Completed /api/session/init/stream handler successfully")
+
+        except (ConnectionResetError, BrokenPipeError, ClientConnectionResetError):
+            # Client disconnected - this is normal, don't log as error
+            logger.debug("Client disconnected during streaming init")
+        except Exception as e:
+            import traceback
+            logger.error(f"Exception in /api/session/init/stream handler: {e}\n{traceback.format_exc()}")
+            try:
+                error_event = f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                await response.write(error_event.encode("utf-8"))
+            except Exception:
+                pass  # Client already disconnected
+
+        try:
+            await response.write_eof()
+        except Exception:
+            pass  # Client already disconnected
+        return response
 
     async def _handle_get_theme(self, request: web.Request) -> web.Response:
         """Return user's theme.css overrides.
@@ -652,7 +727,7 @@ class FeedbackServer:
         await response.prepare(request)
 
         try:
-            logger.info("Starting /more/stream handler", session_id=session_id, rec_type=rec_type)
+            logger.info(f"Starting /more/stream handler session_id={session_id} rec_type={rec_type}")
             # Get the async generator from the callback
             async for event in self.on_more_stream_request(
                 session_id, rec_type, count, session_feedback, profile_diffs, custom_directives
@@ -664,14 +739,22 @@ class FeedbackServer:
                 await response.drain()
             logger.info("Completed /more/stream handler successfully")
 
+        except (ConnectionResetError, BrokenPipeError, ClientConnectionResetError):
+            # Client disconnected - this is normal, don't log as error
+            logger.debug("Client disconnected during streaming more")
         except Exception as e:
             import traceback
-            logger.error("Exception in /more/stream handler", error=str(e), traceback=traceback.format_exc())
-            # Send error event
-            error_event = f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-            await response.write(error_event.encode("utf-8"))
+            logger.error(f"Exception in /more/stream handler: {e}\n{traceback.format_exc()}")
+            try:
+                error_event = f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                await response.write(error_event.encode("utf-8"))
+            except Exception:
+                pass  # Client already disconnected
 
-        await response.write_eof()
+        try:
+            await response.write_eof()
+        except Exception:
+            pass  # Client already disconnected
         return response
 
     # ============================================================

@@ -914,14 +914,13 @@ async def _run_server_in_main(
     port: int,
     static_dir: Path,
     user_input: str,
-    session_id: str,
-    html_path: Path,
-    result: Optional["DiscoveryResult"] = None,
+    context: str,
+    context_augmentation: str,
+    save_to_history: bool = True,
 ) -> None:
     """Run feedback server in main thread's event loop.
 
-    This ensures all subprocess spawning (from /more/stream) happens in the
-    main thread, avoiding race conditions with SIGCHLD signal handling.
+    Discovery runs synchronously first, then the server starts with results.
 
     Args:
         storage: Storage manager for history/feedback
@@ -929,25 +928,62 @@ async def _run_server_in_main(
         port: Preferred server port
         static_dir: Directory containing HTML files to serve
         user_input: User's original input for context panel
-        session_id: Session ID from discovery
-        html_path: Path to the generated HTML file
-        result: Optional DiscoveryResult for React frontend initial data
+        context: User context for discovery
+        context_augmentation: Additional context from profile/sources
+        save_to_history: Whether to save recommendations to history
     """
     import webbrowser
 
     from serendipity.icons import discover_icons
     from serendipity.server import FeedbackServer
 
-    # Build initial data for React frontend
-    initial_data = {}
-    if result:
-        all_recs = list(result.convergent) + list(result.divergent)
-        initial_data = {
-            "session_id": result.session_id,
-            "recommendations": [rec.to_dict() for rec in all_recs],
-            "pairings": [p.to_dict() for p in result.pairings],
-            "icons": discover_icons(),
-        }
+    # Run discovery asynchronously (we're already in an async context)
+    console.print("[bold green]Discovering...[/bold green]")
+    console.print()
+    result = await agent.discover(context, context_augmentation=context_augmentation)
+    console.print()
+
+    # Show session info
+    if result.session_id:
+        console.print(f"[dim]Session: {result.session_id}[/dim]")
+        console.print(f"[dim]Resume: claude -r {result.session_id}[/dim]")
+        console.print()
+
+    # Save to history
+    if save_to_history:
+        _save_to_history(storage, result)
+
+    # Combine convergent and divergent for frontend
+    all_recommendations = []
+    for rec in result.convergent:
+        all_recommendations.append({
+            "url": rec.url,
+            "reason": rec.reason,
+            "approach": "convergent",
+            "title": rec.title,
+            "media_type": rec.media_type,
+            "is_pairing": False,
+        })
+    for rec in result.divergent:
+        all_recommendations.append({
+            "url": rec.url,
+            "reason": rec.reason,
+            "approach": "divergent",
+            "title": rec.title,
+            "media_type": rec.media_type,
+            "is_pairing": False,
+        })
+
+    # Prepare initial data for frontend
+    initial_data = {
+        "session_id": result.session_id,
+        "recommendations": all_recommendations,
+        "pairings": [p.to_dict() for p in result.pairings],
+        "icons": discover_icons(),
+    }
+
+    # Track session ID for more requests
+    current_session_id = result.session_id
 
     async def on_more_request(
         session_id: str,
@@ -1035,19 +1071,17 @@ async def _run_server_in_main(
     )
 
     # Register user input for context panel
-    if session_id and user_input:
-        server.register_session_input(session_id, user_input)
+    if current_session_id and user_input:
+        server.register_session_input(current_session_id, user_input)
 
     # Start server and get actual port
     actual_port = await server.start(port)
 
-    # Open browser
-    filename = html_path.name
-    url = f"http://localhost:{actual_port}/{filename}"
+    # Open browser to React frontend
+    url = f"http://localhost:{actual_port}/"
     webbrowser.open(url)
 
     console.print(success(f"Opened in browser: {url}"))
-    console.print(f"[dim]HTML file: {html_path}[/dim]")
     if actual_port != port:
         console.print(f"[yellow]Port {port} was in use, using port {actual_port}[/yellow]")
     console.print(f"[dim]Feedback server running on localhost:{actual_port}[/dim]")
@@ -1307,6 +1341,29 @@ def discover_cmd(
         storage=storage,
     )
 
+    # For browser destination, use streaming discovery (server starts first)
+    # For other destinations, use synchronous discovery
+    history_enabled = "history" not in sources_to_disable
+
+    if dest == "browser":
+        # Run feedback server in main thread's event loop with streaming discovery
+        # Server starts immediately, discovery streams when frontend connects
+        try:
+            asyncio.run(_run_server_in_main(
+                storage=storage,
+                agent=agent,
+                port=server_port,
+                static_dir=Path(__file__).parent.parent / "static",
+                user_input=context,
+                context=context,
+                context_augmentation=context_augmentation,
+                save_to_history=history_enabled,
+            ))
+        except KeyboardInterrupt:
+            pass  # Server stopped message already printed in _run_server_in_main
+        return  # Exit after server stops
+
+    # For non-browser destinations, run synchronous discovery
     console.print("[bold green]Discovering...[/bold green]")
     console.print()
     result = agent.run_sync(
@@ -1321,8 +1378,7 @@ def discover_cmd(
         console.print(f"[dim]Resume: claude -r {result.session_id}[/dim]")
         console.print()
 
-    # Save to history (unless history source is disabled)
-    history_enabled = "history" not in sources_to_disable
+    # Save to history
     if history_enabled:
         _save_to_history(storage, result)
 
@@ -1331,38 +1387,12 @@ def discover_cmd(
         formatted_content = agent.render_json(result)
     elif output_format == "markdown":
         formatted_content = agent.render_markdown(result)
-    elif output_format == "html":
-        formatted_content = None  # HTML is handled specially by browser destination
     else:
         console.print(error(f"Unknown output format: {output_format}"))
         raise typer.Exit(code=1)
 
-    # Handle destination
-    if dest == "browser":
-        # Require Claude to have written the HTML file
-        if not result.html_path or not result.html_path.exists():
-            console.print(error("Claude failed to write HTML file"))
-            console.print(f"[dim]Expected path: {agent.output_dir}[/dim]")
-            raise typer.Exit(code=1)
-
-        # Run feedback server in main thread's event loop
-        # This ensures subprocess spawning (from /more/stream) happens in the main thread,
-        # avoiding race conditions with SIGCHLD signal handling on macOS
-        try:
-            asyncio.run(_run_server_in_main(
-                storage=storage,
-                agent=agent,
-                port=server_port,
-                static_dir=agent.output_dir,
-                user_input=context,
-                session_id=result.session_id,
-                html_path=result.html_path,
-                result=result,
-            ))
-        except KeyboardInterrupt:
-            pass  # Server stopped message already printed in _run_server_in_main
-
-    elif dest == "stdout":
+    # Handle non-browser destinations
+    if dest == "stdout":
         # Stdout destination - print formatted content directly
         if formatted_content:
             # Use sys.stdout for clean piping (no Rich formatting)

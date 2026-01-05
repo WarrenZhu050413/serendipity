@@ -72,9 +72,12 @@ function App() {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
 
-  // Load initial data
+  // Load initial data (non-streaming for stability)
   useEffect(() => {
     const loadInitialData = async () => {
+      setIsLoading(true)
+      setLoadingMessage('Loading recommendations...')
+
       try {
         const data = await api.getSessionInit()
         setSessionId(data.session_id)
@@ -93,6 +96,8 @@ function App() {
         }
       } catch (error) {
         console.error('Failed to load initial data:', error)
+      } finally {
+        setIsLoading(false)
       }
     }
     loadInitialData()

@@ -1,5 +1,5 @@
 import { StarRating } from '../StarRating'
-import { mediaTypeIcons, LinkIcon } from '../icons'
+import { mediaTypeIcons, approachIcons } from '../icons'
 import type { Recommendation } from '../../types'
 
 interface CardProps {
@@ -14,8 +14,9 @@ interface CardProps {
 export function Card({ recommendation, rating, onRating, isNew, index }: CardProps) {
   const { url, title, reason, media_type, approach, metadata } = recommendation
 
-  // Get icon component for media type
-  const MediaIcon = mediaTypeIcons[media_type] || LinkIcon
+  // Get icon components (with fallback to null if not found)
+  const MediaIcon = mediaTypeIcons[media_type] || null
+  const ApproachIcon = approachIcons[approach] || null
 
   return (
     <div
@@ -33,14 +34,13 @@ export function Card({ recommendation, rating, onRating, isNew, index }: CardPro
         />
       </div>
 
-      {/* Tags */}
+      {/* Tags - icons with text fallback */}
       <div className="card-tags">
-        <span className={`card-tag approach-${approach}`}>
-          {approach}
+        <span className={`card-tag approach-${approach}`} title={approach}>
+          {ApproachIcon ? <ApproachIcon className="card-icon" size={14} /> : approach}
         </span>
-        <span className={`card-tag media-${media_type}`}>
-          <MediaIcon className="card-icon" size={16} />
-          {media_type}
+        <span className={`card-tag media-${media_type}`} title={media_type}>
+          {MediaIcon ? <MediaIcon className="card-icon" size={14} /> : media_type}
         </span>
       </div>
 

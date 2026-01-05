@@ -997,3 +997,801 @@ class TestMoreStreamEndpoint:
         assert received_args["session_feedback"] == [{"url": "http://test.com", "feedback": "liked"}]
         assert received_args["profile_diffs"] == {"taste": "diff"}
         assert received_args["custom_directives"] == "be creative"
+
+
+# ============================================================
+# Profile API: Taste
+# ============================================================
+
+
+class TestTasteAPI:
+    """Tests for /api/profile/taste endpoints."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a real storage manager with temp directory."""
+        storage = StorageManager(base_dir=tmp_path)
+        storage.ensure_dirs()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_get_taste_returns_content(self, storage):
+        """Test that GET /api/profile/taste returns taste.md content."""
+        storage.save_taste("# My Taste\n\nI like deep technical content")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_taste(request)
+
+        data = json.loads(response.text)
+        assert "My Taste" in data["content"]
+        assert "deep technical content" in data["content"]
+
+    @pytest.mark.asyncio
+    async def test_get_taste_empty_when_not_exists(self, storage):
+        """Test that GET /api/profile/taste returns empty when no file."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_taste(request)
+
+        data = json.loads(response.text)
+        assert data["content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_save_taste_creates_version(self, storage):
+        """Test that POST /api/profile/taste saves with versioning."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"content": "# New Taste"})
+
+        response = await server._handle_save_taste(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert "version_id" in data
+
+        # Verify content was saved
+        saved = storage.load_taste()
+        assert "New Taste" in saved
+
+    @pytest.mark.asyncio
+    async def test_save_taste_invalid_json(self, storage):
+        """Test that POST /api/profile/taste handles invalid JSON."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(side_effect=json.JSONDecodeError("", "", 0))
+
+        response = await server._handle_save_taste(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "Invalid JSON" in data["error"]
+
+
+# ============================================================
+# Profile API: Learnings
+# ============================================================
+
+
+class TestLearningsAPI:
+    """Tests for /api/profile/learnings endpoints."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a real storage manager with temp directory."""
+        storage = StorageManager(base_dir=tmp_path)
+        storage.ensure_dirs()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_get_learnings_returns_list(self, storage):
+        """Test that GET /api/profile/learnings returns parsed learnings."""
+        storage.save_learnings("# My Learnings\n\n## Likes\n\n### Deep dives\nI enjoy technical deep dives")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_learnings(request)
+
+        data = json.loads(response.text)
+        assert "learnings" in data
+        assert isinstance(data["learnings"], list)
+
+    @pytest.mark.asyncio
+    async def test_add_learning_success(self, storage):
+        """Test that POST /api/profile/learnings adds a learning."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "type": "like",
+            "title": "Technical articles",
+            "content": "Deep dives on programming",
+        })
+
+        response = await server._handle_add_learning(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert "version_id" in data
+        assert len(data["learnings"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_add_learning_missing_title(self, storage):
+        """Test that POST /api/profile/learnings requires title."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "type": "like",
+            "content": "Some content",
+        })
+
+        response = await server._handle_add_learning(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "title is required" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_learning_success(self, storage):
+        """Test that DELETE /api/profile/learnings/{id} deletes a learning."""
+        # Add a learning first
+        storage.save_learnings("# My Learnings\n\n## Likes\n\n### Test\nSome content")
+
+        server = FeedbackServer(storage=storage)
+
+        # Get the learning ID
+        request = MagicMock()
+        response = await server._handle_get_learnings(request)
+        data = json.loads(response.text)
+        learning_id = data["learnings"][0]["id"]
+
+        # Delete it
+        request = MagicMock()
+        request.match_info = {"id": learning_id}
+
+        response = await server._handle_delete_learning(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_delete_learning_not_found(self, storage):
+        """Test that DELETE /api/profile/learnings/{id} returns 404 for unknown ID."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"id": "nonexistent-id"}
+
+        response = await server._handle_delete_learning(request)
+
+        assert response.status == 404
+        data = json.loads(response.text)
+        assert "not found" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_update_learning_success(self, storage):
+        """Test that PATCH /api/profile/learnings/{id} updates a learning."""
+        # Add a learning first
+        storage.save_learnings("# My Learnings\n\n## Likes\n\n### Test\nSome content")
+
+        server = FeedbackServer(storage=storage)
+
+        # Get the learning ID
+        request = MagicMock()
+        response = await server._handle_get_learnings(request)
+        data = json.loads(response.text)
+        learning_id = data["learnings"][0]["id"]
+
+        # Update it
+        request = MagicMock()
+        request.match_info = {"id": learning_id}
+        request.json = AsyncMock(return_value={"title": "Updated Title"})
+
+        response = await server._handle_update_learning(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_learning_not_found(self, storage):
+        """Test that PATCH /api/profile/learnings/{id} returns 404 for unknown ID."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"id": "nonexistent-id"}
+        request.json = AsyncMock(return_value={"title": "New Title"})
+
+        response = await server._handle_update_learning(request)
+
+        assert response.status == 404
+
+
+# ============================================================
+# Profile API: History
+# ============================================================
+
+
+class TestHistoryAPI:
+    """Tests for /api/profile/history endpoints."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a real storage manager with temp directory."""
+        storage = StorageManager(base_dir=tmp_path)
+        storage.ensure_dirs()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_get_history_returns_entries(self, storage):
+        """Test that GET /api/profile/history returns history entries."""
+        entries = [
+            HistoryEntry(
+                url="https://example.com",
+                title="Example",
+                reason="Great article",
+                type="convergent",
+                rating=4,
+                timestamp="2024-01-01T00:00:00",
+                session_id="session-1",
+            ),
+        ]
+        storage.append_history(entries)
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.query = {"limit": "50"}
+
+        response = await server._handle_get_history(request)
+
+        data = json.loads(response.text)
+        assert len(data["history"]) == 1
+        assert data["history"][0]["url"] == "https://example.com"
+
+    @pytest.mark.asyncio
+    async def test_delete_history_entry_success(self, storage):
+        """Test that DELETE /api/profile/history deletes an entry."""
+        entries = [
+            HistoryEntry(
+                url="https://example.com",
+                reason="Test",
+                type="convergent",
+                timestamp="2024-01-01T00:00:00",
+                session_id="session-1",
+            ),
+        ]
+        storage.append_history(entries)
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.query = {"url": "https://example.com"}
+
+        response = await server._handle_delete_history_entry(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_delete_history_entry_missing_url(self, storage):
+        """Test that DELETE /api/profile/history requires url parameter."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.query = {}
+
+        response = await server._handle_delete_history_entry(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "url query parameter is required" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_history_entry_not_found(self, storage):
+        """Test that DELETE /api/profile/history returns 404 for unknown URL."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.query = {"url": "https://nonexistent.com"}
+
+        response = await server._handle_delete_history_entry(request)
+
+        assert response.status == 404
+
+
+# ============================================================
+# Settings API
+# ============================================================
+
+
+class TestSettingsAPI:
+    """Tests for /api/settings endpoints."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a real storage manager with temp directory."""
+        storage = StorageManager(base_dir=tmp_path)
+        storage.ensure_dirs()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_get_settings_returns_yaml(self, storage):
+        """Test that GET /api/settings returns settings."""
+        storage.settings_path.write_text("model: claude-sonnet\ntotal_count: 5")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_settings(request)
+
+        data = json.loads(response.text)
+        assert data["settings"]["model"] == "claude-sonnet"
+        assert data["settings"]["total_count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_get_settings_empty_when_no_file(self, storage):
+        """Test that GET /api/settings returns empty when no file."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_settings(request)
+
+        data = json.loads(response.text)
+        assert data["settings"] == {}
+
+    @pytest.mark.asyncio
+    async def test_update_settings_merges(self, storage):
+        """Test that PATCH /api/settings merges settings."""
+        storage.settings_path.write_text("model: claude-sonnet\ntotal_count: 5")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"settings": {"total_count": 10}})
+
+        response = await server._handle_update_settings(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert data["settings"]["total_count"] == 10
+        assert data["settings"]["model"] == "claude-sonnet"
+
+    @pytest.mark.asyncio
+    async def test_reset_settings_deletes_file(self, storage):
+        """Test that POST /api/settings/reset removes settings file."""
+        storage.settings_path.write_text("model: custom")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_reset_settings(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert not storage.settings_path.exists()
+
+
+# ============================================================
+# Sources API
+# ============================================================
+
+
+class TestSourcesAPI:
+    """Tests for /api/sources endpoints."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a real storage manager with temp directory."""
+        storage = StorageManager(base_dir=tmp_path)
+        storage.ensure_dirs()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_get_sources_returns_list(self, storage):
+        """Test that GET /api/sources returns source list."""
+        storage.settings_path.write_text("""
+context_sources:
+  taste:
+    type: loader
+    enabled: true
+    description: User taste profile
+  history:
+    type: loader
+    enabled: false
+    description: Past recommendations
+""")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_sources(request)
+
+        data = json.loads(response.text)
+        assert len(data["sources"]) == 2
+        assert any(s["name"] == "taste" for s in data["sources"])
+
+    @pytest.mark.asyncio
+    async def test_toggle_source_success(self, storage):
+        """Test that POST /api/sources/{name}/toggle toggles enabled."""
+        storage.settings_path.write_text("""
+context_sources:
+  taste:
+    type: loader
+    enabled: true
+""")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"name": "taste"}
+
+        response = await server._handle_toggle_source(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert data["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_toggle_source_not_found(self, storage):
+        """Test that POST /api/sources/{name}/toggle returns 404 for unknown."""
+        storage.settings_path.write_text("context_sources: {}")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"name": "nonexistent"}
+
+        response = await server._handle_toggle_source(request)
+
+        assert response.status == 404
+
+
+# ============================================================
+# Version History API
+# ============================================================
+
+
+class TestVersionHistoryAPI:
+    """Tests for /api/versions endpoints."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a real storage manager with temp directory."""
+        storage = StorageManager(base_dir=tmp_path)
+        storage.ensure_dirs()
+        return storage
+
+    def test_resolve_file_path_taste(self, storage):
+        """Test _resolve_file_path for taste."""
+        server = FeedbackServer(storage=storage)
+        assert server._resolve_file_path("taste") == storage.taste_path
+
+    def test_resolve_file_path_learnings(self, storage):
+        """Test _resolve_file_path for learnings."""
+        server = FeedbackServer(storage=storage)
+        assert server._resolve_file_path("learnings") == storage.learnings_path
+
+    def test_resolve_file_path_settings(self, storage):
+        """Test _resolve_file_path for settings."""
+        server = FeedbackServer(storage=storage)
+        assert server._resolve_file_path("settings") == storage.settings_path
+
+    def test_resolve_file_path_unknown(self, storage):
+        """Test _resolve_file_path returns None for unknown."""
+        server = FeedbackServer(storage=storage)
+        assert server._resolve_file_path("unknown") is None
+
+    @pytest.mark.asyncio
+    async def test_list_versions_returns_list(self, storage):
+        """Test that GET /api/versions/{file} returns version list."""
+        # Create some versions
+        storage.save_with_version(storage.taste_path, "Version 1")
+        storage.save_with_version(storage.taste_path, "Version 2")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"file": "taste"}
+
+        response = await server._handle_list_versions(request)
+
+        data = json.loads(response.text)
+        assert "versions" in data
+        assert len(data["versions"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_list_versions_unknown_file(self, storage):
+        """Test that GET /api/versions/{file} returns 400 for unknown file."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"file": "unknown"}
+
+        response = await server._handle_list_versions(request)
+
+        assert response.status == 400
+        data = json.loads(response.text)
+        assert "Unknown file" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_version_returns_content(self, storage):
+        """Test that GET /api/versions/{file}/{version_id} returns content."""
+        # First save creates the file (no version backup yet)
+        storage.save_with_version(storage.taste_path, "Original Content")
+        # Second save creates a backup of "Original Content"
+        version_id = storage.save_with_version(storage.taste_path, "New Content")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"file": "taste", "version_id": version_id}
+
+        response = await server._handle_get_version(request)
+
+        data = json.loads(response.text)
+        assert data["content"] == "Original Content"  # Backup is of previous content
+
+    @pytest.mark.asyncio
+    async def test_get_version_not_found(self, storage):
+        """Test that GET /api/versions/{file}/{version_id} returns 404."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"file": "taste", "version_id": "nonexistent"}
+
+        response = await server._handle_get_version(request)
+
+        assert response.status == 404
+
+    @pytest.mark.asyncio
+    async def test_restore_version_success(self, storage):
+        """Test that POST /api/versions/{file}/{version_id}/restore restores."""
+        # First save creates the file (no version backup yet)
+        storage.save_with_version(storage.taste_path, "Original")
+        # Second save creates a backup of "Original"
+        version_id = storage.save_with_version(storage.taste_path, "Modified")
+        # Now "Modified" is current, and we can restore "Original"
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"file": "taste", "version_id": version_id}
+
+        response = await server._handle_restore_version(request)
+
+        data = json.loads(response.text)
+        assert data["success"] is True
+        assert data["content"] == "Original"  # Restored to the previous version
+
+    @pytest.mark.asyncio
+    async def test_restore_version_not_found(self, storage):
+        """Test that POST /api/versions/{file}/{version_id}/restore returns 404."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"file": "taste", "version_id": "nonexistent"}
+
+        response = await server._handle_restore_version(request)
+
+        assert response.status == 404
+
+
+# ============================================================
+# Session Init Stream
+# ============================================================
+
+
+class TestSessionInitStream:
+    """Tests for /api/session/init/stream endpoint."""
+
+    @pytest.fixture
+    def storage(self):
+        """Create mock storage."""
+        storage = MagicMock(spec=StorageManager)
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_session_init_stream_no_callback(self, storage):
+        """Test that /api/session/init/stream returns 501 without callback."""
+        server = FeedbackServer(storage=storage, on_init_stream_request=None)
+
+        request = MagicMock()
+        response = await server._handle_session_init_stream(request)
+
+        assert response.status == 501
+        data = json.loads(response.text)
+        assert "not supported" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_session_init_returns_initial_data(self, storage):
+        """Test that GET /api/session/init returns initial data."""
+        initial = {
+            "session_id": "test-123",
+            "recommendations": [{"url": "http://example.com"}],
+            "pairings": [],
+            "icons": {},
+        }
+        server = FeedbackServer(storage=storage, initial_data=initial)
+
+        request = MagicMock()
+        response = await server._handle_session_init(request)
+
+        data = json.loads(response.text)
+        assert data["session_id"] == "test-123"
+        assert len(data["recommendations"]) == 1
+
+
+# ============================================================
+# Static Assets
+# ============================================================
+
+
+class TestStaticAssets:
+    """Tests for /assets/* static file serving."""
+
+    @pytest.mark.asyncio
+    async def test_static_asset_returns_content(self, tmp_path):
+        """Test serving a static asset from /assets/."""
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        test_file = assets_dir / "main.js"
+        test_file.write_text("console.log('test');")
+
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage, static_dir=tmp_path)
+
+        request = MagicMock()
+        request.match_info = {"path": "main.js"}
+
+        response = await server._handle_static_asset(request)
+
+        assert response.status == 200
+        assert "console.log" in response.text
+
+    @pytest.mark.asyncio
+    async def test_static_asset_not_found(self, tmp_path):
+        """Test 404 for missing asset."""
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage, static_dir=tmp_path)
+
+        request = MagicMock()
+        request.match_info = {"path": "nonexistent.js"}
+
+        response = await server._handle_static_asset(request)
+
+        assert response.status == 404
+
+    @pytest.mark.asyncio
+    async def test_static_asset_path_traversal_blocked(self, tmp_path):
+        """Test that path traversal is blocked in assets."""
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage, static_dir=tmp_path)
+
+        request = MagicMock()
+        request.match_info = {"path": "../../../etc/passwd"}
+
+        response = await server._handle_static_asset(request)
+
+        assert response.status == 403
+
+    @pytest.mark.asyncio
+    async def test_static_asset_no_static_dir(self):
+        """Test 404 when no static_dir configured."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        request.match_info = {"path": "test.js"}
+
+        response = await server._handle_static_asset(request)
+
+        assert response.status == 404
+
+
+# ============================================================
+# Content Type Detection
+# ============================================================
+
+
+class TestContentTypeDetection:
+    """Tests for _get_content_type method."""
+
+    def test_get_content_type_html(self):
+        """Test HTML content type detection."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("index.html") == "text/html"
+
+    def test_get_content_type_css(self):
+        """Test CSS content type detection."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("style.css") == "text/css"
+
+    def test_get_content_type_js(self):
+        """Test JavaScript content type detection."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("app.js") == "application/javascript"
+
+    def test_get_content_type_json(self):
+        """Test JSON content type detection."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("data.json") == "application/json"
+
+    def test_get_content_type_svg(self):
+        """Test SVG content type detection."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("icon.svg") == "image/svg+xml"
+
+    def test_get_content_type_png(self):
+        """Test PNG content type detection."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("image.png") == "image/png"
+
+    def test_get_content_type_unknown(self):
+        """Test unknown extension returns octet-stream."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("file.xyz") == "application/octet-stream"
+
+    def test_get_content_type_no_extension(self):
+        """Test no extension returns octet-stream."""
+        storage = MagicMock(spec=StorageManager)
+        server = FeedbackServer(storage=storage)
+        assert server._get_content_type("Makefile") == "application/octet-stream"
+
+
+# ============================================================
+# Theme Endpoint
+# ============================================================
+
+
+class TestThemeEndpoint:
+    """Tests for /api/theme.css endpoint."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        """Create a real storage manager with temp directory."""
+        storage = StorageManager(base_dir=tmp_path)
+        storage.ensure_dirs()
+        return storage
+
+    @pytest.mark.asyncio
+    async def test_get_theme_returns_css(self, storage):
+        """Test that GET /api/theme.css returns CSS content."""
+        storage.save_theme(":root { --color-primary: blue; }")
+
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_theme(request)
+
+        assert response.content_type == "text/css"
+        assert "--color-primary: blue" in response.text
+
+    @pytest.mark.asyncio
+    async def test_get_theme_empty_when_no_file(self, storage):
+        """Test that GET /api/theme.css returns empty when no theme."""
+        server = FeedbackServer(storage=storage)
+
+        request = MagicMock()
+        response = await server._handle_get_theme(request)
+
+        assert response.content_type == "text/css"
+        assert response.text == ""
